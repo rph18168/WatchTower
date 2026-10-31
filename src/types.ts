@@ -138,6 +138,9 @@ export interface TelegramSendAdapter {
   send(request: { text: string }): Promise<TelegramSendResult>;
 }
 
+/** A committed start without an outcome remains unconfirmed after runner loss. */
+export type NotificationAttempt = { at: string; retryGeneration?: number } & (TelegramSendResult | { status: 'in-flight' });
+
 export type TelegramCommand = 'digest' | 'status' | 'pause' | 'resume';
 
 /** Identity and raw message content have already been checked inside the adapter. */
@@ -158,7 +161,7 @@ export interface NotificationDelivery {
   status: 'pending' | 'sent';
   sentAt: string | null;
   messageId?: string;
-  attempts: ({ at: string } & TelegramSendResult)[];
+  attempts: NotificationAttempt[];
 }
 
 export interface DevelopmentNotification extends NotificationDelivery {
