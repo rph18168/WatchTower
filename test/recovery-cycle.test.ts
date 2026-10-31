@@ -359,3 +359,27 @@ test('过期清理不重发已确认的夜间批次，未确认批次只补仍�
     for (const id of ['690', '691']) assert.equal(recovered.notifications.find((n) => 'candidateId' in n && n.candidateId === id)?.sentAt, '2026-11-02T00:00:00.000Z');
   } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test('替代汇总继承的永久故障继续显示在状态查询，恢复命令仍授予一次新机会', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-summary-status-'));
+  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const delivered: string[] = [];
+  const summaryId = 'summary:permanent';
+  try {
+    const summary = { id: summaryId, kind: 'overnight-summary' as const, origin: 'proactive' as const, notificationIds: ['old', 'fresh'],
+      sections: [{ notificationId: 'old', text: '旧动态' }, { notificationId: 'fresh', text: '新动态' }], text: '夜间动态汇总\n\n旧动态\n\n——\n\n新动态',
+      createdAt: at.toISOString(), status: 'pending' as const, sentAt: null, attempts: [{ at: at.toISOString(), status: 'failed' as const, failureCode: 'recipient-unavailable' as const, permanent: true }] };
+    await state.save({ schemaVersion: 1, candidates: [], digest: [], lastRunAt: at.toISOString(), notifications: [
+      ...['old', 'fresh'].map((id) => ({ id, kind: 'development' as const, candidateId: id, developmentAt: id === 'old' ? '2026-10-29T00:00:00.000Z' : '2026-11-01T00:00:00.000Z', text: id === 'old' ? '旧动态' : '新动态', change: '资料开放。', whyItMatters: '可查阅。', claims: [], sources: [], topicIds: ['science'], summaryIds: [summaryId], createdAt: at.toISOString(), status: 'pending' as const, sentAt: null, attempts: [] })), summary,
+    ] });
+    const common = { loadConfig: async () => config, state, hn: { discover: async () => [] }, model, clock: () => new Date('2026-11-01T01:15:00.000Z') };
+    const send = async ({ text }: { text: string }) => { delivered.push(text); return { status: 'sent' as const, messageId: 'diagnosed' }; };
+    await runCycle({ ...common, telegram: { send } });
+    assert.equal(delivered.length, 0);
+    await runCycle({ ...common, commandsOnly: true, telegram: { send, getUpdates: async () => [{ updateId: 1, command: 'status' }] } });
+    assert.match(delivered[0]!, /不可恢复故障：1（recipient-unavailable）/);
+    await runCycle({ ...common, telegram: { send, getUpdates: async () => [{ updateId: 2, command: 'resume' }] } });
+    assert.equal(delivered.filter((text) => text.startsWith('夜间动态汇总')).length, 1);
+    assert.match(delivered.find((text) => text.startsWith('已恢复'))!, /发送故障再次尝试/);
+  } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
+});

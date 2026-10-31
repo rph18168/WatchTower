@@ -3,7 +3,7 @@ import { BudgetAdmissionError, createModelBudget } from './budget.ts';
 import { modelUsageLimits } from './config.ts';
 import { updateBudgetNotice } from './budget-notices.ts';
 import { recordCandidateDevelopment, restoreDevelopmentHistory } from './developments.ts';
-import { confirmSummaryMembers, deliveryAllowed, ownsDelivery, prepareOvernightSummaries, retryDue } from './delivery.ts';
+import { confirmSummaryMembers, deliveryAllowed, deliveryAttempts, ownsDelivery, prepareOvernightSummaries, retryDue } from './delivery.ts';
 import { archiveExpiredCandidates, beginInitialBaseline, candidateBatch, completeInitialBaseline, expireStaleNotifications } from './recovery.ts';
 
 export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> {
@@ -31,7 +31,7 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
         if (update.command === 'pause' || update.command === 'resume') {
           control.manuallyPaused = update.command === 'pause';
           if (update.command === 'resume') control.deliveryRetryGeneration = (control.deliveryRetryGeneration ?? 0) + 1;
-          const deliveryFault = state.notifications.some((notification) => notification.status === 'pending' && ownsDelivery(notification) && notification.attempts.some((attempt) => 'permanent' in attempt && attempt.permanent));
+          const deliveryFault = state.notifications.some((notification) => notification.status === 'pending' && ownsDelivery(notification) && deliveryAttempts(notification, state).some((attempt) => 'permanent' in attempt && attempt.permanent));
           state.notifications.push({
             kind: 'command-reply', origin: 'command-reply', id: `command:${update.updateId}`,
             text: update.command === 'pause'
@@ -358,7 +358,7 @@ function renderStatus(state: MonitoringState, budget: ModelBudgetStatus, now: st
     : provider.remainingUsd === null ? '未设 key 限额，不代表账户余额无限'
     : `已知剩余 US$${provider.remainingUsd.toFixed(4)}`;
   const pendingAttempts = state.notifications.filter((notification) => notification.status === 'pending' && ownsDelivery(notification))
-    .flatMap((notification) => notification.attempts.slice(-1));
+    .flatMap((notification) => deliveryAttempts(notification, state).slice(-1));
   const permanent = pendingAttempts.filter((attempt) => 'permanent' in attempt && attempt.permanent).length;
   const uncertain = pendingAttempts.filter(({ status }) => ['unknown', 'in-flight'].includes(status)).length;
   const deliveryCodes = [...new Set(pendingAttempts.flatMap((attempt) => 'failureCode' in attempt ? [attempt.failureCode] : []))];

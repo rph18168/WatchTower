@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { DevelopmentNotification, MonitoringState, OvernightSummaryNotification, PendingNotification } from './types.ts';
+import type { DevelopmentNotification, MonitoringState, NotificationAttempt, OvernightSummaryNotification, PendingNotification } from './types.ts';
 
 const shanghaiHour = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Shanghai', hour: '2-digit', hourCycle: 'h23',
@@ -13,8 +13,8 @@ export function deliveryAllowed(notification: PendingNotification, state: Monito
   return !state.control?.manuallyPaused && notificationWindowOpen(at);
 }
 
-/** Retry scheduling never replaces the shared quiet-hours/pause admission. */
-export function retryDue(notification: PendingNotification, state: MonitoringState, at: Date): boolean {
+/** Retry ancestry is evidence for both admission and user-visible diagnostics. */
+export function deliveryAttempts(notification: PendingNotification, state: MonitoringState): NotificationAttempt[] {
   const attempts = [...notification.attempts];
   let ancestor = notification;
   const visited = new Set([notification.id]);
@@ -26,6 +26,12 @@ export function retryDue(notification: PendingNotification, state: MonitoringSta
     attempts.unshift(...parent.attempts);
     ancestor = parent;
   }
+  return attempts;
+}
+
+/** Retry scheduling never replaces the shared quiet-hours/pause admission. */
+export function retryDue(notification: PendingNotification, state: MonitoringState, at: Date): boolean {
+  const attempts = deliveryAttempts(notification, state);
   const previous = attempts.at(-1);
   if (previous) {
     const permanentlyFailed = previous.status === 'failed' && previous.permanent === true;
