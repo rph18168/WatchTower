@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createOpenRouterAdapter, createSqliteStateStore, runCycle } from '../src/index.ts';
 import type { CandidateStory, DigestModelAdapter, SourceReaderAdapter, WatchTowerConfig } from '../src/index.ts';
+import { establishMonitoringState } from './support/state.ts';
 
 const at = new Date('2026-11-01T01:00:00.000Z');
 const config: WatchTowerConfig = { model: 'test/model', topics: [{ id: 'science', description: '公共科研资料的新进展' }] };
@@ -137,7 +138,7 @@ test('恢复重试前移除夜间汇总中过期成员，保留尝试与已确�
   const recent = story('631', '2026-11-01T22:00:00.000Z');
   const attempts: string[] = [];
   try {
-    await state.save({ schemaVersion: 1, candidates: [], digest: [], notifications: [], lastRunAt: '2026-10-29T00:00:00.000Z' });
+    await establishMonitoringState(state);
     for (const candidate of [older, recent]) {
       await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [candidate] }, model, sources, clock: () => new Date(candidate.publishedAt) });
     }
@@ -170,7 +171,7 @@ test('近期来源暂时超时保留待核实进度，重启后有界重试而�
   let reads = 0;
   let verifications = 0;
   try {
-    await state.save({ schemaVersion: 1, candidates: [], digest: [], notifications: [], lastRunAt: '2026-10-29T00:00:00.000Z' });
+    await establishMonitoringState(state);
     const first = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [story('640')] }, model, sources: { read: async ({ candidateId, url }) => { reads++; return { id: `source:${candidateId}`, candidateId, originalUrl: url, status: 'unavailable', title: '', text: '', truncated: false, failureCode: 'timeout' }; } }, clock: () => at });
     assert.equal(first.digest.length, 1);
     assert.equal(first.notifications.length, 0);
@@ -184,5 +185,177 @@ test('近期来源暂时超时保留待核实进度，重启后有界重试而�
     assert.equal(reads, 2);
     assert.equal(verifications, 1);
     assert.equal(recovered.notifications[0]?.status, 'sent');
+  } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('空状态先处理操作命令，首次真正巡检仍以巡检时刻建立基线', async (t) => {
+  for (const commands of [['status'], ['pause', 'resume']] as const) {
+    await t.test(commands.join('/'), async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'watchtower-command-before-baseline-'));
+      const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+      const delivered: string[] = [];
+      try {
+        for (const [index, command] of commands.entries()) {
+          await runCycle({ loadConfig: async () => config, state, commandsOnly: true, hn: { discover: async () => { throw new Error('操作周期不采集'); } }, model,
+            telegram: { getUpdates: async () => [{ updateId: index + 1, command }], send: async ({ text }) => { delivered.push(text); return { status: 'sent', messageId: `command-${index}` }; } }, clock: () => new Date(at.getTime() + index * 900_000) });
+        }
+        assert.equal((await state.load()).initialBaseline, undefined);
+        const commandCount = delivered.length;
+        const result = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [story('650', '2026-11-01T01:30:00.000Z')] }, model, sources,
+          telegram: { getUpdates: async () => [], send: async ({ text }) => { delivered.push(text); return { status: 'sent', messageId: 'unexpected-history' }; } }, clock: () => new Date('2026-11-01T02:00:00.000Z') });
+        assert.equal(delivered.length, commandCount);
+        assert.equal(result.digest.length, 1);
+        assert.equal((await state.load()).initialBaseline?.until, '2026-11-01T02:00:00.000Z');
+      } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
+    });
+  }
+});
+
+test('汇总移除过期成员后的替代消息仍遵守原限流等待，不复制成虚假的发送尝试', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-summary-retry-inheritance-'));
+  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const sent: string[] = [];
+  const oldId = 'news:old'; const freshId = 'news:fresh'; const summaryId = 'summary:limited';
+  const oldText = '已过期的旧观测资料开放。'; const freshText = '仍有价值的新观测资料开放。';
+  const initialAttempt = { at: '2026-11-01T00:59:00.000Z', status: 'failed' as const, failureCode: 'rate-limited' as const, retryAfterSeconds: 3600 };
+  try {
+    await state.save({ schemaVersion: 1, candidates: [], digest: [], lastRunAt: at.toISOString(), notifications: [
+      ...[{ id: oldId, candidateId: 'old', text: oldText, developmentAt: '2026-10-30T01:00:00.000Z' }, { id: freshId, candidateId: 'fresh', text: freshText, developmentAt: '2026-10-31T12:00:00.000Z' }].map((n) => ({ ...n, kind: 'development' as const, change: n.text, whyItMatters: '可供研究者查阅。', topicIds: ['science'], claims: [], sources: [], createdAt: '2026-10-31T23:00:00.000Z', status: 'pending' as const, sentAt: null, attempts: [], summaryIds: [summaryId] })),
+      { id: summaryId, kind: 'overnight-summary', origin: 'proactive', notificationIds: [oldId, freshId], sections: [{ notificationId: oldId, text: oldText }, { notificationId: freshId, text: freshText }], text: `夜间动态汇总\n\n${oldText}\n\n——\n\n${freshText}`, createdAt: initialAttempt.at, status: 'pending', sentAt: null, attempts: [initialAttempt] },
+    ] });
+    const options = { loadConfig: async () => config, state, hn: { discover: async () => [] }, model, telegram: { send: async ({ text }: { text: string }) => { sent.push(text); return { status: 'sent' as const, messageId: 'after-original-delay' }; } } };
+    const waiting = await runCycle({ ...options, clock: () => new Date('2026-11-01T01:01:00.000Z') });
+    assert.deepEqual(sent, []);
+    const replacement = waiting.notifications.find((n) => n.kind === 'overnight-summary' && n.status === 'pending')!;
+    assert.deepEqual(replacement.attempts, []);
+    const recovered = await runCycle({ ...options, clock: () => new Date('2026-11-01T01:59:00.000Z') });
+    assert.deepEqual(sent, [`夜间动态汇总\n\n${freshText}`]);
+    assert.deepEqual(recovered.notifications.find(({ id }) => id === summaryId)?.attempts, [initialAttempt]);
+    assert.equal(recovered.notifications.find(({ id }) => id === freshId)?.status, 'sent');
+  } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('基线因预算中断后候选改写标题，未完成的历史内容仍属基线而不成为新通知', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-baseline-interrupted-content-'));
+  const path = join(directory, 'state.sqlite');
+  let state = createSqliteStateStore(path);
+  try {
+    await runCycle({ loadConfig: async () => ({ ...config, usage: { monthlyBudgetUsd: 0 } }), state, hn: { discover: async () => [story('660')] }, model, clock: () => at });
+    state.close(); state = createSqliteStateStore(path);
+    const result = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [{ ...story('660'), title: 'Reworded archive headline' }] }, model, sources,
+      telegram: { send: async () => { throw new Error('未处理的历史基线不能变成新通知'); } }, clock: () => new Date('2026-11-01T01:15:00.000Z') });
+    assert.equal(result.notifications.length, 0);
+    assert.equal(result.digest[0]?.summary, change('660'));
+    assert.equal((await state.load()).initialBaseline?.status, 'complete');
+  } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('远端发送检查点耗时跨过 48 小时后停止旧新闻；命令回复与当前运行报告仍可送达', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-freshness-checkpoint-'));
+  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  let clock = at;
+  const delivered: string[] = [];
+  try {
+    await state.save({ schemaVersion: 1, candidates: [], digest: [], lastRunAt: at.toISOString(), notifications: [
+      { id: 'news', kind: 'development', candidateId: 'old', developmentAt: '2026-10-30T01:00:02.000Z', text: '旧新闻', change: '旧动态', whyItMatters: '旧意义', topicIds: ['science'], claims: [], sources: [], createdAt: at.toISOString(), status: 'pending', sentAt: null, attempts: [] },
+      { id: 'earlier-news', kind: 'development', candidateId: 'earlier', developmentAt: '2026-10-30T01:00:00.000Z', text: '更早新闻', change: '更早动态', whyItMatters: '旧意义', topicIds: ['science'], claims: [], sources: [], createdAt: at.toISOString(), status: 'pending', sentAt: null, attempts: [] },
+      { id: 'reply', kind: 'command-reply', origin: 'command-reply', text: '本人查询回复', createdAt: '2026-10-01T00:00:00.000Z', status: 'pending', sentAt: null, attempts: [] },
+      { id: 'report', kind: 'budget-status', origin: 'proactive', text: '当前运行报告', createdAt: '2026-10-01T00:00:00.000Z', status: 'pending', sentAt: null, attempts: [] },
+    ] });
+    const result = await runCycle({ loadConfig: async () => config, state: { load: () => state.load(), save: async (snapshot) => {
+      await state.save(snapshot);
+      if (snapshot.notifications.some(({ id, status, attempts }) => id === 'news' && status === 'pending' && attempts.at(-1)?.status === 'in-flight')) {
+        // The attempt checkpoint expires the other item; persisting that expiry
+        // takes the current delivery past its own limit as well.
+        const earlierExpired = snapshot.notifications.some(({ id, status }) => id === 'earlier-news' && status === 'expired');
+        clock = new Date(earlierExpired ? '2026-11-01T01:00:03.000Z' : '2026-11-01T01:00:01.000Z');
+      }
+    } }, hn: { discover: async () => [] }, model,
+    telegram: { send: async ({ text }) => { delivered.push(text); return { status: 'sent', messageId: 'current' }; } }, clock: () => clock });
+    assert.deepEqual(delivered, ['本人查询回复', '当前运行报告']);
+    const old = result.notifications.find(({ id }) => id === 'news')!;
+    assert.equal(old.status, 'expired');
+    assert.equal(old.sentAt, null);
+    assert.equal(old.attempts[0]?.status, 'in-flight');
+    assert.equal((await state.load()).notifications[0]?.status, 'expired');
+  } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('暂时来源失败最多尝试三次且间隔递增，不重复摘要或产生无界核实费用', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-source-retry-ceiling-'));
+  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  let reads = 0; let analyses = 0; let verifications = 0;
+  try {
+    await establishMonitoringState(state);
+    for (const [index, time] of ['01:00', '01:01', '01:15', '01:44', '01:45', '02:00'].entries()) {
+      await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => index ? [] : [story('665')] },
+        model: { ...model, analyze: async (request) => { analyses++; return model.analyze(request); }, verifyDevelopment: async (request) => { verifications++; return model.verifyDevelopment!(request); } },
+        sources: { read: async ({ candidateId, url }) => { reads++; return { id: `source:${candidateId}`, candidateId, originalUrl: url, status: 'unavailable', title: '', text: '', truncated: false, failureCode: 'network' }; } }, clock: () => new Date(`2026-11-01T${time}:00.000Z`) });
+    }
+    assert.equal(reads, 3); assert.equal(analyses, 1); assert.equal(verifications, 0);
+    const durable = await state.load();
+    assert.equal(durable.notifications.length, 0);
+    assert.equal(durable.candidates[0]?.notificationReview?.status, 'complete');
+    assert.equal(durable.budget?.calls?.length, 1);
+    assert.match(durable.digest[0]!.summary, /来源正文未能完整核实/);
+  } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('动态恢复按当前修订时间判断；新来源的纯重复不刷新旧通知，实质修订不受旧主帖时间拖累', async (t) => {
+  for (const relation of ['duplicate', 'substantive-update'] as const) {
+    await t.test(relation, async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'watchtower-revision-freshness-'));
+      const path = join(directory, 'state.sqlite');
+      let state = createSqliteStateStore(path);
+      const original = story('680'); const next = { ...story('681', '2026-11-03T01:00:00.000Z'), url: original.url };
+      try {
+        await establishMonitoringState(state);
+        await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [original] }, model, sources, clock: () => at });
+        state.close(); state = createSqliteStateStore(path);
+        const delivered: string[] = [];
+        const nextChange = relation === 'duplicate' ? change('680') : change('681');
+        const recovered = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [next] },
+          model: { ...model, verifyDevelopment: async ({ source }) => ({ verification: { supported: true, change: nextChange, whyItMatters: '研究者可查阅新的公开观测。', uncertainty: null, sourceRole: 'primary', claims: [{ statement: nextChange, sourceId: source.id, quote: source.text }] }, usage }), resolveDevelopment: async ({ knownDevelopments }) => ({ resolution: { developmentId: knownDevelopments[0]!.developmentId, revisionId: knownDevelopments[0]!.revisionId, relation }, usage }) }, sources,
+          telegram: { send: async ({ text }) => { delivered.push(text); return { status: 'sent', messageId: 'new-revision' }; } }, clock: () => new Date('2026-11-03T01:15:00.000Z') });
+        assert.equal(recovered.notifications[0]?.status, 'expired');
+        assert.equal(recovered.notifications[0]?.sentAt, null);
+        assert.equal(delivered.length, relation === 'duplicate' ? 0 : 1);
+        assert.equal(recovered.digest.length, 1);
+        if (relation === 'substantive-update') assert.ok(delivered[0]?.includes(change('681')));
+      } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
+    });
+  }
+});
+
+test('过期清理不重发已确认的夜间批次，未确认批次只补仍新鲜的成员', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-summary-confirmed-progress-'));
+  const path = join(directory, 'state.sqlite');
+  let state = createSqliteStateStore(path);
+  const older = ['690', '691', '692'].map((id) => story(id, '2026-10-31T22:00:00.000Z'));
+  const recent = story('693', '2026-11-01T22:00:00.000Z');
+  const longChange = (id: string) => change(id) + '新观测资料。'.repeat(105);
+  const longModel: DigestModelAdapter = { ...model, verifyDevelopment: async ({ candidate, source }) => ({ verification: {
+    supported: true, change: longChange(candidate.id), whyItMatters: '研究者可比较。'.repeat(95), uncertainty: null, sourceRole: 'primary',
+    claims: [{ statement: longChange(candidate.id), sourceId: source.id, quote: source.text }],
+  }, usage }) };
+  try {
+    await establishMonitoringState(state);
+    await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => older }, model: longModel, sources, clock: () => new Date('2026-10-31T22:00:00.000Z') });
+    await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [recent] }, model: longModel, sources, clock: () => new Date(recent.publishedAt) });
+    const sent: string[] = [];
+    const first = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [] }, model,
+      telegram: { send: async ({ text }) => { sent.push(text); return sent.length === 1 ? { status: 'sent', messageId: 'confirmed-first-batch' } : { status: 'unknown', failureCode: 'network' }; } }, clock: () => new Date('2026-11-02T00:00:00.000Z') });
+    assert.equal(sent.length, 2);
+    const confirmed = first.notifications.find((n) => n.kind === 'overnight-summary' && n.status === 'sent')!;
+    assert.ok(sent[0]?.includes(change('690')) && sent[0]?.includes(change('691')));
+    assert.ok(sent[1]?.includes(change('692')) && sent[1]?.includes(change('693')));
+    state.close(); state = createSqliteStateStore(path);
+    const recoveredSends: string[] = [];
+    const recovered = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [] }, model,
+      telegram: { send: async ({ text }) => { recoveredSends.push(text); return { status: 'sent', messageId: 'fresh-remainder' }; } }, clock: () => new Date('2026-11-03T00:00:00.000Z') });
+    assert.equal(recoveredSends.length, 1);
+    assert.ok(recoveredSends[0]?.includes(change('693')) && !recoveredSends[0]?.includes(change('692')));
+    assert.deepEqual(recovered.notifications.find(({ id }) => id === confirmed.id), confirmed);
+    for (const id of ['690', '691']) assert.equal(recovered.notifications.find((n) => 'candidateId' in n && n.candidateId === id)?.sentAt, '2026-11-02T00:00:00.000Z');
   } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
 });

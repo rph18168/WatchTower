@@ -60,6 +60,7 @@ test('两个完整周期在不同 runner 工作目录中从 GitHub SQLite 快照
     assert.deepEqual(recovered.digest, initial.digest);
     assert.equal(recovered.digest[0]?.summary, '编译器新版降低内存需求，可供开发者评估。');
     assert.deepEqual(recovered.status, {
+      manuallyPaused: false, fault: null,
       candidateCount: 1, processedCandidateCount: 1, pendingCandidateCount: 0, lastRunAt: '2026-11-01T01:15:00.000Z',
       budget: { month: '2026-11', monthlyBudgetUsd: 10, spentUsd: 0.001, remainingUsd: 9.999, runSpentUsd: 0, steps: 0, pauseReason: null },
     });

@@ -26,13 +26,15 @@
 
 ## 人工执行一次完整周期
 
-在进程环境中提供 `OPENROUTER_API_KEY`，不要写入版本管理中的文件。构建后使用显式的付费操作开关：
+在进程环境中提供 `OPENROUTER_API_KEY`、`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` 和 `TELEGRAM_USER_ID`，不要写入版本管理中的文件。构建后使用显式的付费操作开关：
 
 ```powershell
 npm start -- --allow-paid-model
 ```
 
-可选参数为 `--config <路径>`、`--state <SQLite路径>` 和 `--digest <Markdown路径>`；默认输出位于被 Git 忽略的 `.watchtower/`。`--github-state` 使用 `GITHUB_TOKEN` / `GITHUB_REPOSITORY` 读取和保存同仓快照，可用 `--state-branch <分支>` 改变默认 `watchtower-state`。不提供 `--allow-paid-model` 时，命令退出且不发起网络请求。这一开关表示人工启用真实模型工作，实际请求仍受应用和 provider 额度约束。
+可选参数为 `--config <路径>`、`--state <SQLite路径>` 和 `--digest <Markdown路径>`；默认输出位于被 Git 忽略的 `.watchtower/`。`--github-state` 使用 `GITHUB_TOKEN` / `GITHUB_REPOSITORY` 读取和保存同仓快照，可用 `--state-branch <分支>` 改变默认 `watchtower-state`。`--allow-paid-model` 表示人工启用真实模型工作，实际请求仍受应用和 provider 额度约束。也可用 `--commands-only` 仅处理 Telegram 操作，无需模型 key；两个开关均不提供时退出且不发起网络请求。
+
+Telegram 提供本人私聊的 `/digest`、`/status`、`/pause` 和 `/resume`。每个周期优先读取操作，暂停后仍能回复与恢复；夜间查询不受主动通知时段限制。预算不足会排入去重的运行报告；命令处理、身份边界、游标恢复和 24 小时未读更新边界见 [Telegram 控制说明](docs/telegram-controls.md)。
 
 应用的业务入口为 `runCycle({ loadConfig, state, hn, model, clock? })`，返回保存后的 `digest`、`markdown`、候选处理数量 `status` 及本轮 `usage`。`StateStore.load()` / `save()` 都是异步契约，`save` 只有在持久化完成后才应成功返回；SQLite 适配器还提供 `close()`。远端快照适配器可在这一存储 seam 延续持久化契约，无需再暴露每个业务步骤。
 
@@ -44,7 +46,7 @@ HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固�
 
 ## 持久状态与恢复
 
-SQLite 事务保存候选及其待处理/已处理进度、主题关联、摘要与最近成功运行时间。先保存采集结果，再请求模型；模型失败或摘要校验失败后，下一周期可以重新处理已持久保存的候选。已处理帖子重复出现时不会重复生成摘要；没有待处理候选时不调用模型。
+SQLite 事务保存候选的待处理、已处理和历史状态、主题关联、摘要与最近成功运行时间。首次巡检建立最近 48 小时的初始基线和摘要，不推历史通知；故障或预算恢复按同一窗口继续，并以有界批次跨周期推进。先保存采集结果，再请求模型；已有摘要、动态去重与发送确认继续有效。没有待处理模型工作时不调用模型。基线续接、来源重试、汇总过期处理和发现边界见[恢复说明](docs/recovery.md)。
 
 SQLite 使用 DELETE journal 和 FULL synchronous，保存完成后是包含已提交事务的单个数据库文件。本地模式重新打开同一路径可继续运行；GitHub 模式每次从状态分支固定 SHA 恢复，再通过 `expectedHeadOid` 检测过期版本，且每次 `save()` 都等待远端提交。删除 Markdown 后，下次成功周期会从 SQLite 再生成它。本地模式须独占数据库；远端写者还须共享工作流串行约束。
 

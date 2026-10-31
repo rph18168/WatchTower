@@ -52,10 +52,14 @@ export function expireStaleNotifications(state: MonitoringState, at: Date): bool
 /** Persist the installation cutoff before discovery or model work can fail. */
 export function beginInitialBaseline(state: MonitoringState, now: string): void {
   if (state.initialBaseline) return;
-  const until = state.lastRunAt ?? now;
+  // Command-only cycles have a lastRunAt too. Only actual news facts establish
+  // an older installation; control traffic cannot move the first cutoff.
+  const hasNewsHistory = state.candidates.length > 0 || state.digest.length > 0 ||
+    state.notifications.some(({ kind }) => kind === undefined || kind === 'development');
+  const until = hasNewsHistory ? state.lastRunAt ?? now : now;
   state.initialBaseline = {
     since: new Date(Date.parse(until) - windowMs).toISOString(), until,
-    status: state.lastRunAt ? 'complete' : 'building', completedAt: state.lastRunAt,
+    status: hasNewsHistory ? 'complete' : 'building', completedAt: hasNewsHistory ? until : null,
   };
 }
 

@@ -13,6 +13,33 @@ export function deliveryAllowed(notification: PendingNotification, state: Monito
   return !state.control?.manuallyPaused && notificationWindowOpen(at);
 }
 
+/** Retry scheduling never replaces the shared quiet-hours/pause admission. */
+export function retryDue(notification: PendingNotification, state: MonitoringState, at: Date): boolean {
+  const attempts = [...notification.attempts];
+  let ancestor = notification;
+  const visited = new Set([notification.id]);
+  while (ancestor.kind === 'overnight-summary' && ancestor.retryFromId && !visited.has(ancestor.retryFromId)) {
+    const parentId = ancestor.retryFromId;
+    const parent = state.notifications.find(({ id }) => id === parentId);
+    if (!parent) break;
+    visited.add(parent.id);
+    attempts.unshift(...parent.attempts);
+    ancestor = parent;
+  }
+  const previous = attempts.at(-1);
+  if (previous) {
+    const permanentlyFailed = previous.status === 'failed' && previous.permanent === true;
+    if (permanentlyFailed && (previous.retryGeneration ?? 0) >= (state.control?.deliveryRetryGeneration ?? 0)) return false;
+    // Start at one minute, doubling to six hours; Telegram may require longer.
+    const backoff = Math.min(60_000 * 2 ** Math.min(attempts.length - 1, 9), 6 * 60 * 60 * 1000);
+    const retryAfter = previous.status !== 'sent' && previous.status !== 'in-flight' && Number.isSafeInteger(previous.retryAfterSeconds) && previous.retryAfterSeconds! > 0
+      ? previous.retryAfterSeconds! * 1000 : 0;
+    const delay = Math.max(backoff, retryAfter);
+    if (!permanentlyFailed && !(at.getTime() >= Date.parse(previous.at) + delay)) return false;
+  }
+  return true;
+}
+
 function notificationWindowOpen(at: Date): boolean {
   const hour = Number(shanghaiHour.format(at));
   return hour >= 8 && hour < 23;
@@ -26,7 +53,7 @@ function isDevelopment(notification: PendingNotification): notification is Devel
 export function prepareOvernightSummaries(state: MonitoringState, at: Date): void {
   if (state.control?.manuallyPaused || !notificationWindowOpen(at)) return;
   const members = state.notifications.filter((notification): notification is DevelopmentNotification =>
-    isDevelopment(notification) && notification.status === 'pending' && !notification.summaryIds?.length &&
+    isDevelopment(notification) && notification.status === 'pending' && !notification.summaryIds?.length && notification.attempts.length === 0 &&
     !notificationWindowOpen(new Date(notification.createdAt)));
   if (!members.length) return;
   const sections = members.flatMap((member) => splitText(member.text, 4096 - summaryHeader.length).map((text) => ({ member, text })));
@@ -48,11 +75,11 @@ export function replaceExpiredSummaryMembers(state: MonitoringState, at: Date): 
       const member = members.find(({ id, status }) => id === notificationId && status === 'pending');
       return member ? [{ member, text }] : [];
     });
-    queueSummarySections(state, remaining, at);
+    queueSummarySections(state, remaining, at, summary.id);
   }
 }
 
-function queueSummarySections(state: MonitoringState, sections: { member: DevelopmentNotification; text: string }[], at: Date): void {
+function queueSummarySections(state: MonitoringState, sections: { member: DevelopmentNotification; text: string }[], at: Date, retryFromId?: string): void {
   let batch: typeof sections = [];
   let batchLength = summaryHeader.length;
   const finishBatch = () => {
@@ -66,6 +93,7 @@ function queueSummarySections(state: MonitoringState, sections: { member: Develo
     if (!state.notifications.some((notification) => notification.id === id)) state.notifications.push({
       id, kind: 'overnight-summary', origin: 'proactive', notificationIds: ids, text,
       sections: batch.map(({ member, text }) => ({ notificationId: member.id, text })),
+      ...(retryFromId ? { retryFromId } : {}),
       createdAt: at.toISOString(), status: 'pending', sentAt: null, attempts: [],
     });
     batch = [];
@@ -94,6 +122,7 @@ function splitText(text: string, limit: number): string[] {
 
 /** Summary members remain in the outbox as evidence, never as a second send. */
 export function ownsDelivery(notification: PendingNotification): boolean {
+  if (notification.kind === 'budget-status' && notification.withdrawnAt) return false;
   return !isDevelopment(notification) || !notification.summaryIds?.length;
 }
 
