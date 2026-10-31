@@ -1,5 +1,5 @@
 import type { createModelBudget } from './budget.ts';
-import type { DevelopmentComparison, DevelopmentRecord, DevelopmentResolution, DevelopmentVerification, DigestEntry, DigestModelAdapter, MonitoringState, PendingNotification, SourceEvidence, StateStore, StoredCandidate, WatchTowerConfig } from './types.ts';
+import type { DevelopmentComparison, DevelopmentNotification, DevelopmentRecord, DevelopmentResolution, DevelopmentVerification, DigestEntry, DigestModelAdapter, MonitoringState, PendingNotification, SourceEvidence, StateStore, StoredCandidate, WatchTowerConfig } from './types.ts';
 
 /** Old SQLite payloads retain delivery receipts while gaining separate identity. */
 export function restoreDevelopmentHistory(state: MonitoringState): void {
@@ -7,7 +7,7 @@ export function restoreDevelopmentHistory(state: MonitoringState): void {
   for (const development of developments) {
     for (const revision of development.revisions) revision.verified ??= revision.claims.length > 0;
   }
-  for (const notification of state.notifications.filter(({ developmentId }) => !developmentId)) {
+  for (const notification of state.notifications.filter(isDevelopment).filter(({ developmentId }) => !developmentId)) {
     const candidate = state.candidates.find(({ story }) => story.id === notification.candidateId);
     const entry = state.digest.find(({ candidateId }) => candidateId === notification.candidateId);
     if (!entry) continue;
@@ -148,7 +148,7 @@ export async function recordCandidateDevelopment(state: MonitoringState, candida
     : development.revisions.find((revision) => sameKnownVersion(revision, change, verification));
   if (existing) {
     existing.candidateIds = unique([...existing.candidateIds, candidate.story.id]);
-    const notification = state.notifications.find(({ id }) => id === existing.notificationId);
+    const notification = state.notifications.filter(isDevelopment).find(({ id }) => id === existing.notificationId);
     if (notification) {
       notification.candidateIds = existing.candidateIds;
       notification.topicIds = development.topicIds;
@@ -166,7 +166,8 @@ export async function recordCandidateDevelopment(state: MonitoringState, candida
   if (!verification || context.allowNotification === false) return true;
   const id = availableId(`notification:${candidate.story.id}`, state.notifications);
   revision.notificationId = id;
-  const notification: PendingNotification = {
+  const notification: DevelopmentNotification = {
+    kind: 'development', origin: 'proactive',
     id, candidateId: candidate.story.id, candidateIds: [candidate.story.id], developmentId: development.id, revisionId,
     topicIds: development.topicIds, text: '', change: verification.change, whyItMatters: verification.whyItMatters,
     claims: verification.claims, sources, createdAt: now, status: 'pending', sentAt: null, attempts: [],
@@ -186,8 +187,12 @@ function validateResolution(resolution: DevelopmentResolution, batch: Developmen
   throw new Error('Model response contains an unknown Development identity');
 }
 
-function notificationText(notification: PendingNotification): string {
+function notificationText(notification: DevelopmentNotification): string {
   return `${notification.change}\n\n意义：${notification.whyItMatters}\n\n${notification.sources.map(({ kind, url }) => `${kind === 'original' ? '来源' : 'HN 讨论'}：${url}`).join('\n')}`;
+}
+
+function isDevelopment(notification: PendingNotification): notification is DevelopmentNotification {
+  return notification.kind === undefined || notification.kind === 'development';
 }
 
 function unique(values: string[]): string[] { return [...new Set(values)]; }

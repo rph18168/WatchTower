@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createSqliteStateStore, runCycle } from '../src/index.ts';
-import type { CandidateStory, DigestModelAdapter, SourceEvidence } from '../src/index.ts';
+import type { CandidateStory, DevelopmentNotification, DigestModelAdapter, PendingNotification, SourceEvidence } from '../src/index.ts';
 
 const now = new Date('2026-11-01T01:00:00.000Z');
 const config = {
@@ -39,6 +39,8 @@ const model: DigestModelAdapter = {
     verification: { supported: true, change, whyItMatters, uncertainty: null, sourceRole: 'primary', claims: [{ statement: change, sourceId: source.id, quote: source.text }] }, usage,
   }),
 };
+const developmentNotifications = ({ notifications }: { notifications: PendingNotification[] }) =>
+  notifications.filter((notification): notification is DevelopmentNotification => notification.kind === undefined || notification.kind === 'development');
 
 test('同一动态跨帖子与关注主题合并来源、摘要和通知，SQLite 重开后重复讨论不再通知', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-development-'));
@@ -135,9 +137,9 @@ test('热度上涨不产生模型工作；同一来源 URL 有据的实质更新
     assert.equal(sends, 2);
     assert.equal(update.digest.length, 1);
     assert.equal(update.digest[0]?.summary, '公共自行车新增五十个站点，让更多居民能够就近使用。');
-    assert.equal(update.notifications[1]?.developmentId, initial.notifications[0]?.developmentId);
-    assert.notEqual(update.notifications[1]?.revisionId, initial.notifications[0]?.revisionId);
-    assert.deepEqual(update.notifications[1]?.claims, [{ statement: newChange, sourceId: `source:${updated.id}`, quote: newQuote }]);
+    assert.equal(developmentNotifications(update)[1]?.developmentId, developmentNotifications(initial)[0]?.developmentId);
+    assert.notEqual(developmentNotifications(update)[1]?.revisionId, developmentNotifications(initial)[0]?.revisionId);
+    assert.deepEqual(developmentNotifications(update)[1]?.claims, [{ statement: newChange, sourceId: `source:${updated.id}`, quote: newQuote }]);
     assert.equal(update.usage?.costUsd, 0.003);
   } finally {
     state.close();
@@ -167,7 +169,7 @@ test('已处理帖子正文变化会重新判断，帖子 ID 与通知修订进�
     assert.equal(update.digest[0]?.summary, newChange);
     assert.notEqual(update.notifications[0]?.id, update.notifications[1]?.id);
     assert.equal(update.notifications[0]?.status, 'sent');
-    assert.equal(update.notifications[1]?.developmentId, update.notifications[0]?.developmentId);
+    assert.equal(developmentNotifications(update)[1]?.developmentId, developmentNotifications(update)[0]?.developmentId);
     assert.equal((await state.load()).candidates[0]?.notificationReview?.status, 'complete');
     const idle = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [{ ...changed, score: 200 }] }, model: { analyze: async () => { throw new Error('正文未再变化'); } }, telegram, clock: () => now });
     assert.equal(idle.usage, null);
@@ -215,7 +217,7 @@ test('旧 SQLite 中已有的通知确认继续作为已知动态去重，不要
     delete legacy.developments;
     for (const candidate of legacy.candidates) { delete candidate.developmentId; delete candidate.developmentReview; delete candidate.digestSummary; }
     for (const digest of legacy.digest) { delete digest.developmentId; delete digest.candidateIds; }
-    for (const notification of legacy.notifications) { delete notification.developmentId; delete notification.revisionId; delete notification.candidateIds; }
+    for (const notification of developmentNotifications(legacy)) { delete notification.developmentId; delete notification.revisionId; delete notification.candidateIds; delete notification.kind; delete notification.origin; }
     await state.save(legacy);
     state.close();
     state = createSqliteStateStore(path);
@@ -271,7 +273,7 @@ test('来源 URL 复用及相同概括措辞不能把不同的有据新事件永
     const result = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [ferry] }, model: makeModel(ferry, '城市开始运营一条新的轮渡航线。'), sources: { read: async () => sourceFor(ferry, 'The city has started operating a new ferry route connecting the two riverside districts.') }, telegram, clock: () => now });
     assert.equal(sends, 2);
     assert.equal(result.digest.length, 2);
-    assert.notEqual(result.notifications[0]?.developmentId, result.notifications[1]?.developmentId);
+    assert.notEqual(developmentNotifications(result)[0]?.developmentId, developmentNotifications(result)[1]?.developmentId);
     assert.equal(result.usage?.costUsd, 0.003);
   } finally {
     state.close();

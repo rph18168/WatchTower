@@ -2,6 +2,7 @@ import type { CandidateDecision, CycleResult, DevelopmentVerification, DigestEnt
 import { createModelBudget } from './budget.ts';
 import { modelUsageLimits } from './config.ts';
 import { recordCandidateDevelopment, restoreDevelopmentHistory } from './developments.ts';
+import { confirmSummaryMembers, deliveryAllowed, ownsDelivery, prepareOvernightSummaries } from './delivery.ts';
 
 export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
   const config = await options.loadConfig();
@@ -112,18 +113,22 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
     }
   }
   const budgetStatus = budget.status();
+  prepareOvernightSummaries(state, (options.clock ?? (() => new Date()))());
   state.lastRunAt = now;
   await options.state.save(state);
   if (options.telegram) {
     for (const notification of state.notifications.filter(({ status }) => status === 'pending')) {
+      const attemptedAt = (options.clock ?? (() => new Date()))();
+      if (!ownsDelivery(notification) || !deliveryAllowed(notification, state, attemptedAt)) continue;
       let result: TelegramSendResult;
       try { result = await options.telegram.send({ text: notification.text }); }
       catch { result = { status: 'unknown', failureCode: 'network' }; }
-      notification.attempts.push({ at: now, ...result });
+      notification.attempts.push({ at: attemptedAt.toISOString(), ...result });
       if (result.status === 'sent' && typeof result.messageId === 'string' && result.messageId.trim()) {
         notification.status = 'sent';
-        notification.sentAt = now;
+        notification.sentAt = attemptedAt.toISOString();
         notification.messageId = result.messageId;
+        confirmSummaryMembers(state, notification);
       }
       await options.state.save(state);
     }
