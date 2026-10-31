@@ -1,4 +1,6 @@
-import type { CandidateDecision, CycleResult, DigestEntry, MonitoringState, RunCycleOptions, WatchTowerConfig } from './types.ts';
+import type { CandidateDecision, CycleResult, DigestEntry, ModelBudgetStatus, MonitoringState, RunCycleOptions, WatchTowerConfig } from './types.ts';
+import { createModelBudget } from './budget.ts';
+import { modelUsageLimits } from './config.ts';
 
 export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
   const config = await options.loadConfig();
@@ -20,35 +22,38 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
   // A model/network failure must not discard candidates already collected.
   await options.state.save(state);
   const pending = state.candidates.filter(({ status }) => status === 'pending');
-  let usage: CycleResult['usage'] = null;
+  const budget = createModelBudget({ state, store: options.state, config, model: options.model, clock: options.clock ?? (() => new Date()) });
   if (pending.length > 0) {
-    const result = await options.model.analyze({ model: config.model, topics: config.topics, candidates: pending.map(({ story }) => story) });
-    validateDecisions(result.decisions, pending.map(({ story }) => story.id), config);
-    usage = result.usage;
-    for (const decision of result.decisions) {
-      const candidate = pending.find(({ story }) => story.id === decision.candidateId)!;
-      candidate.status = 'processed';
-      candidate.processedAt = now;
-      candidate.topicIds = decision.topicIds;
-      if (decision.topicIds.length > 0) {
-        state.digest.push({
-          id: `digest:${candidate.story.id}`,
-          candidateId: candidate.story.id,
-          title: candidate.story.title,
-          summary: decision.summary!,
-          topicIds: decision.topicIds,
-          sources: [
-            ...(candidate.story.url ? [{ kind: 'original' as const, url: candidate.story.url }] : []),
-            { kind: 'hn', url: candidate.story.hnUrl },
-          ],
-          createdAt: now,
-        });
+    const input = { model: config.model, topics: config.topics, candidates: pending.map(({ story }) => story) };
+    const result = await budget.execute(input, (execution) => options.model.analyze({ ...input, execution }));
+    if (result) {
+      validateDecisions(result.decisions, pending.map(({ story }) => story.id), config);
+      for (const decision of result.decisions) {
+        const candidate = pending.find(({ story }) => story.id === decision.candidateId)!;
+        candidate.status = 'processed';
+        candidate.processedAt = now;
+        candidate.topicIds = decision.topicIds;
+        if (decision.topicIds.length > 0) {
+          state.digest.push({
+            id: `digest:${candidate.story.id}`,
+            candidateId: candidate.story.id,
+            title: candidate.story.title,
+            summary: decision.summary!,
+            topicIds: decision.topicIds,
+            sources: [
+              ...(candidate.story.url ? [{ kind: 'original' as const, url: candidate.story.url }] : []),
+              { kind: 'hn', url: candidate.story.hnUrl },
+            ],
+            createdAt: now,
+          });
+        }
       }
     }
   }
+  const budgetStatus = budget.status();
   state.lastRunAt = now;
   await options.state.save(state);
-  return cycleResult(state, usage, now);
+  return cycleResult(state, budget.usage(), now, budgetStatus);
 }
 
 function validateConfiguration(config: WatchTowerConfig): void {
@@ -62,6 +67,7 @@ function validateConfiguration(config: WatchTowerConfig): void {
     }
     ids.add(topic.id);
   }
+  modelUsageLimits(config);
 }
 
 function validateDecisions(decisions: CandidateDecision[], pendingIds: string[], config: WatchTowerConfig): void {
@@ -79,7 +85,7 @@ function validateDecisions(decisions: CandidateDecision[], pendingIds: string[],
   if (remaining.size > 0) throw new Error('Model response omitted candidate decisions');
 }
 
-function cycleResult(state: MonitoringState, usage: CycleResult['usage'], now: string): CycleResult {
+function cycleResult(state: MonitoringState, usage: CycleResult['usage'], now: string, budget: ModelBudgetStatus): CycleResult {
   const processed = state.candidates.filter(({ status }) => status === 'processed').length;
   return {
     digest: state.digest,
@@ -89,6 +95,7 @@ function cycleResult(state: MonitoringState, usage: CycleResult['usage'], now: s
       processedCandidateCount: processed,
       pendingCandidateCount: state.candidates.length - processed,
       lastRunAt: now,
+      budget,
     },
     usage,
   };

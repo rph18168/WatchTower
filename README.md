@@ -2,7 +2,7 @@
 
 按可配置的关注主题读取 Hacker News 候选帖子，将相关内容整理成中文摘要并保存到 SQLite。Markdown 是从已保存摘要生成的阅读副本。
 
-当前实现覆盖规格 #1 的 [T01 / #2](https://github.com/rph18168/WatchTower/issues/2) 和 [T03 / #4](https://github.com/rph18168/WatchTower/issues/4) 的离线运行与持久化。GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，默认均关闭；完成全功能与最终验收前不启用付费自动运行。部署、调度限制、状态备份及恢复见 [部署说明](docs/deployment.md)。
+当前实现覆盖规格 #1 的 [T01 / #2](https://github.com/rph18168/WatchTower/issues/2)、[T02 / #3](https://github.com/rph18168/WatchTower/issues/3) 和 [T03 / #4](https://github.com/rph18168/WatchTower/issues/4) 的离线摘要、用量控制与持久化。GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，默认均关闭；完成全功能与最终验收前不启用付费自动运行。部署、调度限制、状态备份及恢复见 [部署说明](docs/deployment.md)。
 
 ## 环境与验证
 
@@ -22,6 +22,8 @@
 
 每个完整周期重新读取配置；已保存的运行状态不会覆盖新配置。历史摘要继续保留，新的待处理候选按当前主题判断。
 
+`usage` 配置项目共用月预算、本轮费用阈值、实际模型请求步数、输入字节和输出 token 上限。默认月预算 US$10，UTC 自然月重置。预算暂停仍保留候选；未知费用阻止后续付费工作。字段、暂停原因及账单边界见[模型用量控制](docs/usage-controls.md)。
+
 ## 人工执行一次完整周期
 
 在进程环境中提供 `OPENROUTER_API_KEY`，不要写入版本管理中的文件。构建后使用显式的付费操作开关：
@@ -30,13 +32,13 @@
 npm start -- --allow-paid-model
 ```
 
-可选参数为 `--config <路径>`、`--state <SQLite路径>` 和 `--digest <Markdown路径>`；默认输出位于被 Git 忽略的 `.watchtower/`。`--github-state` 使用 `GITHUB_TOKEN` / `GITHUB_REPOSITORY` 读取和保存同仓快照，可用 `--state-branch <分支>` 改变默认 `watchtower-state`。不提供 `--allow-paid-model` 时，命令退出且不发起网络请求。这一开关表示人工启用单次真实调用，不替代预算控制。
+可选参数为 `--config <路径>`、`--state <SQLite路径>` 和 `--digest <Markdown路径>`；默认输出位于被 Git 忽略的 `.watchtower/`。`--github-state` 使用 `GITHUB_TOKEN` / `GITHUB_REPOSITORY` 读取和保存同仓快照，可用 `--state-branch <分支>` 改变默认 `watchtower-state`。不提供 `--allow-paid-model` 时，命令退出且不发起网络请求。这一开关表示人工启用真实模型工作，实际请求仍受应用和 provider 额度约束。
 
 应用的业务入口为 `runCycle({ loadConfig, state, hn, model, clock? })`，返回保存后的 `digest`、`markdown`、候选处理数量 `status` 及本轮 `usage`。`StateStore.load()` / `save()` 都是异步契约，`save` 只有在持久化完成后才应成功返回；SQLite 适配器还提供 `close()`。远端快照适配器可在这一存储 seam 延续持久化契约，无需再暴露每个业务步骤。
 
 HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固定本轮上界，回看 48 小时、初始至少 20 分，读取所有可用分页并按帖子 ID 合并；如果服务端结果总数超出可用页面，显式失败，不把截断结果当作完整采集。摘要保存原文链接（存在有效 HTTP(S) URL 时）与 HN 讨论入口。T01 的摘要依据 HN 标题与帖子正文，不声称已核实链接原文。
 
-模型适配器使用 [OpenRouter 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，传入主题和候选，要求通用中文摘要、本地校验候选/主题 ID 和基本中文内容。单次响应不授予工具权限；`provider.requireParameters=true`，`maxOutputTokens=4096`，超时 60 秒，传输重试关闭，`allowFinalResponse=false`、`store=false`。这些参数未经过真实付费模型验收。
+模型适配器使用 [OpenRouter 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，传入主题和候选，要求通用中文摘要、本地校验候选/主题 ID 和基本中文内容。单次响应不授予工具权限；`provider.requireParameters=true`，输出 token 使用本轮配置（默认 4096），超时 60 秒，传输重试关闭，`allowFinalResponse=false`、`store=false`。这些参数未经过真实付费模型验收。
 
 `usage.costUsd` 允许为空；`costComplete` 说明费用是否完整，费用缺失不能解释为免费。SDK 完整响应后读取累计 usage；传输失败时只携带已收到的允许字段回执并标记不完整，不把原始 SDK 错误写入日志。
 
