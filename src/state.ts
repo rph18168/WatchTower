@@ -27,6 +27,7 @@ export function createSqliteStateStore(path: string): StateStore & { close(): vo
       return {
         ...metadata,
         notifications: metadata.notifications ?? [],
+        developments: metadata.developments ?? [],
         candidates: database.prepare('SELECT payload FROM candidates ORDER BY rowid').all().map((row) => JSON.parse(String(row.payload))),
         digest: database.prepare('SELECT payload FROM digest_entries ORDER BY rowid').all().map((row) => JSON.parse(String(row.payload))),
       };

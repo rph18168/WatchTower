@@ -572,3 +572,32 @@ test('恢复后不重发旧预算告警，同时保留结果不确定的投递�
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('手动暂停也停止待归并动态的模型工作，/status 保留显示这类待处理进度', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-paused-development-'));
+  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const sent: string[] = [];
+  try {
+    await runCycle({
+      loadConfig: async () => ({ ...config, usage: { runBudgetUsd: 0.1 } }), state,
+      hn: { discover: async () => ['770', '771'].map((id) => ({ id, title: `Public archive ${id}`, hnUrl: `https://news.ycombinator.com/item?id=${id}`, score: 30, publishedAt: now.toISOString() })) },
+      model: {
+        getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }),
+        analyze: async ({ candidates }) => ({ decisions: candidates.map(({ id }) => ({ candidateId: id, topicIds: ['science'], summary: `公共科学档案${id}现已发布。` })), usage: { costUsd: 0.1, inputTokens: 100, outputTokens: 20, costComplete: true } }),
+        resolveDevelopment: async () => { throw new Error('本轮预算应阻止归并请求'); },
+      }, clock: () => now,
+    });
+    const result = await runCycle({
+      loadConfig: async () => config, state,
+      hn: { discover: async () => { throw new Error('手动暂停停止采集'); } },
+      model: { analyze: async () => { throw new Error('手动暂停停止摘要'); }, resolveDevelopment: async () => { throw new Error('手动暂停停止归并'); } },
+      telegram: { getUpdates: async () => [{ updateId: 120, command: 'pause' }, { updateId: 121, command: 'status' }], send: async ({ text }) => { sent.push(text); return { status: 'sent', messageId: String(sent.length) }; } }, clock: () => now,
+    });
+    assert.equal(result.status.manuallyPaused, true);
+    assert.match(sent[1]!, /待归并动态：1/);
+    assert.equal((await state.load()).candidates.filter(({ developmentReview }) => developmentReview?.status === 'pending').length, 1);
+  } finally {
+    state.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

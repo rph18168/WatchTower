@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { DigestModelAdapter, ModelUsage } from '../types.ts';
 import { createAllowanceReader } from './openrouter-allowance.ts';
 import { createStructuredExecutor, StructuredModelError } from './openrouter-execution.ts';
-import { createDevelopmentVerifier } from './development.ts';
+import { createDevelopmentResolver, createDevelopmentVerifier } from './development.ts';
 
 const digestResponse = z.object({
   decisions: z.array(z.object({
@@ -27,6 +27,7 @@ export function createOpenRouterAdapter(options: {
   return {
     getAllowance: createAllowanceReader(options),
     verifyDevelopment: createDevelopmentVerifier(execute),
+    resolveDevelopment: createDevelopmentResolver(execute),
     async analyze({ model, topics, candidates, execution }) {
       const result = await execute({
         model, execution, name: 'watchtower_digest', schema: z.toJSONSchema(digestResponse),

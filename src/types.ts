@@ -69,10 +69,18 @@ export interface StoredCandidate {
   status: 'pending' | 'processed';
   processedAt: string | null;
   topicIds: string[];
+  developmentId?: string;
+  digestSummary?: string;
+  developmentReview?: {
+    status: 'pending' | 'complete';
+    comparedRevisionIds: string[];
+    match?: DevelopmentResolution;
+  };
   notificationReview?: {
     proposal: SignificanceProposal;
     status: 'pending' | 'complete';
     source?: SourceEvidence;
+    verification?: DevelopmentVerification;
   };
 }
 
@@ -103,6 +111,22 @@ export interface DevelopmentVerification extends SignificanceProposal {
   uncertainty: string | null;
   sourceRole: 'primary' | 'secondary' | 'unknown';
   claims: { statement: string; sourceId: string; quote: string }[];
+}
+
+/** Bounded identity context, never an additional unverified source. */
+export interface DevelopmentComparison {
+  developmentId: string;
+  revisionId: string;
+  change: string;
+  verified: boolean;
+  summary: string;
+  sourceUrls: string[];
+}
+
+export interface DevelopmentResolution {
+  developmentId: string | null;
+  revisionId: string | null;
+  relation: 'new' | 'duplicate' | 'substantive-update';
 }
 
 export type TelegramSendResult =
@@ -142,6 +166,9 @@ export interface DevelopmentNotification extends NotificationDelivery {
   kind?: 'development';
   origin?: 'proactive';
   candidateId: string;
+  candidateIds?: string[];
+  developmentId?: string;
+  revisionId?: string;
   topicIds: string[];
   change: string;
   whyItMatters: string;
@@ -174,6 +201,8 @@ export type PendingNotification = DevelopmentNotification | CommandReplyNotifica
 export interface DigestEntry {
   id: string;
   candidateId: string;
+  candidateIds?: string[];
+  developmentId?: string;
   title: string;
   summary: string;
   topicIds: string[];
@@ -186,11 +215,33 @@ export interface MonitoringFault {
   at: string;
 }
 
+export interface DevelopmentRecord {
+  id: string;
+  candidateIds: string[];
+  topicIds: string[];
+  digestId: string;
+  sources: DigestEntry['sources'];
+  revisions: {
+    id: string;
+    candidateIds: string[];
+    change: string;
+    summary?: string;
+    whyItMatters: string;
+    claims: DevelopmentVerification['claims'];
+    verified: boolean;
+    createdAt: string;
+    notificationId?: string;
+  }[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface MonitoringState {
   schemaVersion: 1;
   candidates: StoredCandidate[];
   digest: DigestEntry[];
   notifications: PendingNotification[];
+  developments?: DevelopmentRecord[];
   lastRunAt: string | null;
   budget?: ModelBudgetState;
   control?: {
@@ -246,6 +297,14 @@ export interface DigestModelAdapter {
     source: SourceEvidence;
     execution?: ModelExecution;
   }): Promise<{ verification: DevelopmentVerification; usage: ModelUsage }>;
+  resolveDevelopment?(request: {
+    model: string;
+    candidate: Pick<CandidateStory, 'id' | 'title' | 'url' | 'hnUrl'>;
+    summary: string;
+    verifiedChange: string | null;
+    knownDevelopments: DevelopmentComparison[];
+    execution?: ModelExecution;
+  }): Promise<{ resolution: DevelopmentResolution; usage: ModelUsage }>;
 }
 
 export interface RunCycleOptions {
