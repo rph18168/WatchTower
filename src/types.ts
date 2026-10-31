@@ -114,6 +114,9 @@ export interface TelegramSendAdapter {
   send(request: { text: string }): Promise<TelegramSendResult>;
 }
 
+/** A committed start without an outcome remains unconfirmed after runner loss. */
+export type NotificationAttempt = { at: string; retryGeneration?: number } & (TelegramSendResult | { status: 'in-flight' });
+
 /** Shared durable outbox fields; recipient identity never enters the queue. */
 export interface NotificationDelivery {
   id: string;
@@ -122,7 +125,7 @@ export interface NotificationDelivery {
   status: 'pending' | 'sent';
   sentAt: string | null;
   messageId?: string;
-  attempts: ({ at: string } & TelegramSendResult)[];
+  attempts: NotificationAttempt[];
 }
 
 export interface DevelopmentNotification extends NotificationDelivery {
@@ -174,7 +177,7 @@ export interface MonitoringState {
   notifications: PendingNotification[];
   lastRunAt: string | null;
   budget?: ModelBudgetState;
-  control?: { manuallyPaused: boolean };
+  control?: { manuallyPaused: boolean; deliveryRetryGeneration?: number };
 }
 
 /** save resolves only after the state is durable. Failed saves reject. */

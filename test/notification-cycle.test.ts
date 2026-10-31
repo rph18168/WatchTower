@@ -92,7 +92,7 @@ test('发送抛出或确认结果不确定时保持待发送状态，SQLite 重�
     const recovered = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [] },
       model: { analyze: async () => { throw new Error('核实已持久保存，不应再调用模型'); } },
-      telegram: { send: async () => ({ status: 'sent', messageId: '52' }) }, clock: () => now,
+      telegram: { send: async () => ({ status: 'sent', messageId: '52' }) }, clock: () => new Date('2026-11-01T01:01:00.000Z'),
     });
     assert.equal(recovered.notifications[0]?.status, 'sent');
     assert.equal(recovered.notifications[0]?.attempts.length, 2);
@@ -149,7 +149,7 @@ test('保存待发送通知失败时不发送；确认保存失败后从持久�
     } } }), /Confirmation checkpoint failed/);
     assert.equal(sends, 1);
     assert.equal((await state.load()).notifications[0]?.status, 'pending');
-    const recovered = await runCycle({ ...options, hn: { discover: async () => [] }, model: { analyze: async () => { throw new Error('无需重复核实'); } } });
+    const recovered = await runCycle({ ...options, hn: { discover: async () => [] }, model: { analyze: async () => { throw new Error('无需重复核实'); } }, clock: () => new Date('2026-11-01T01:01:00.000Z') });
     assert.equal(sends, 2);
     assert.equal(recovered.notifications[0]?.status, 'sent');
   } finally {

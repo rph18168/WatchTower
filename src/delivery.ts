@@ -11,6 +11,22 @@ export function deliveryAllowed(notification: PendingNotification, state: Monito
   return !state.control?.manuallyPaused && notificationWindowOpen(at);
 }
 
+/** Retry scheduling never replaces the shared quiet-hours/pause admission. */
+export function retryDue(notification: PendingNotification, state: MonitoringState, at: Date): boolean {
+  const previous = notification.attempts.at(-1);
+  if (previous) {
+    const permanentlyFailed = previous.status === 'failed' && previous.permanent === true;
+    if (permanentlyFailed && (previous.retryGeneration ?? 0) >= (state.control?.deliveryRetryGeneration ?? 0)) return false;
+    // Start at one minute, doubling to six hours; Telegram may require longer.
+    const backoff = Math.min(60_000 * 2 ** Math.min(notification.attempts.length - 1, 9), 6 * 60 * 60 * 1000);
+    const retryAfter = previous.status !== 'sent' && previous.status !== 'in-flight' && Number.isSafeInteger(previous.retryAfterSeconds) && previous.retryAfterSeconds! > 0
+      ? previous.retryAfterSeconds! * 1000 : 0;
+    const delay = Math.max(backoff, retryAfter);
+    if (!permanentlyFailed && !(at.getTime() >= Date.parse(previous.at) + delay)) return false;
+  }
+  return true;
+}
+
 function notificationWindowOpen(at: Date): boolean {
   const hour = Number(shanghaiHour.format(at));
   return hour >= 8 && hour < 23;
@@ -24,7 +40,7 @@ function isDevelopment(notification: PendingNotification): notification is Devel
 export function prepareOvernightSummaries(state: MonitoringState, at: Date): void {
   if (state.control?.manuallyPaused || !notificationWindowOpen(at)) return;
   const members = state.notifications.filter((notification): notification is DevelopmentNotification =>
-    isDevelopment(notification) && notification.status === 'pending' && !notification.summaryIds?.length &&
+    isDevelopment(notification) && notification.status === 'pending' && !notification.summaryIds?.length && notification.attempts.length === 0 &&
     !notificationWindowOpen(new Date(notification.createdAt)));
   if (!members.length) return;
   const header = '夜间动态汇总\n\n';
