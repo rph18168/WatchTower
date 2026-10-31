@@ -114,21 +114,40 @@ export interface TelegramSendAdapter {
   send(request: { text: string }): Promise<TelegramSendResult>;
 }
 
-export interface PendingNotification {
+/** Shared durable outbox fields; recipient identity never enters the queue. */
+export interface NotificationDelivery {
   id: string;
-  candidateId: string;
-  topicIds: string[];
   text: string;
-  change: string;
-  whyItMatters: string;
-  claims: DevelopmentVerification['claims'];
-  sources: { kind: 'original' | 'hn'; url: string }[];
   createdAt: string;
   status: 'pending' | 'sent';
   sentAt: string | null;
   messageId?: string;
   attempts: ({ at: string } & TelegramSendResult)[];
 }
+
+export interface DevelopmentNotification extends NotificationDelivery {
+  /** Missing kind/origin denotes a development in snapshots from older runs. */
+  kind?: 'development';
+  origin?: 'proactive';
+  candidateId: string;
+  topicIds: string[];
+  change: string;
+  whyItMatters: string;
+  claims: DevelopmentVerification['claims'];
+  sources: { kind: 'original' | 'hn'; url: string }[];
+}
+
+export interface CommandReplyNotification extends NotificationDelivery {
+  kind: 'command-reply';
+  origin: 'command-reply';
+}
+
+export interface BudgetStatusNotification extends NotificationDelivery {
+  kind: 'budget-status';
+  origin: 'proactive';
+}
+
+export type PendingNotification = DevelopmentNotification | CommandReplyNotification | BudgetStatusNotification;
 
 export interface DigestEntry {
   id: string;
