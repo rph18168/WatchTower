@@ -2,7 +2,7 @@
 
 按可配置的关注主题读取 Hacker News 候选帖子，将相关内容整理成中文摘要并保存到 SQLite。Markdown 是从已保存摘要生成的阅读副本。
 
-当前实现覆盖规格 #1 的 [T01 / #2](https://github.com/rph18168/WatchTower/issues/2)。模型用量控制、GitHub Actions 状态分支、重大动态通知和 Telegram 操作由后续任务交付；完成用量控制与最终验收前，不应启用无人值守真实模型运行。
+当前实现覆盖规格 #1 的 [T01 / #2](https://github.com/rph18168/WatchTower/issues/2) 和 [T03 / #4](https://github.com/rph18168/WatchTower/issues/4) 的离线运行与持久化。GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，默认均关闭；完成全功能与最终验收前不启用付费自动运行。部署、调度限制、状态备份及恢复见 [部署说明](docs/deployment.md)。
 
 ## 环境与验证
 
@@ -30,7 +30,7 @@
 npm start -- --allow-paid-model
 ```
 
-可选参数为 `--config <路径>`、`--state <SQLite路径>` 和 `--digest <Markdown路径>`；默认输出位于被 Git 忽略的 `.watchtower/`。不提供 `--allow-paid-model` 时，命令退出且不发起网络请求。这一开关表示人工启用单次真实调用，不代表已实施预算控制。
+可选参数为 `--config <路径>`、`--state <SQLite路径>` 和 `--digest <Markdown路径>`；默认输出位于被 Git 忽略的 `.watchtower/`。`--github-state` 使用 `GITHUB_TOKEN` / `GITHUB_REPOSITORY` 读取和保存同仓快照，可用 `--state-branch <分支>` 改变默认 `watchtower-state`。不提供 `--allow-paid-model` 时，命令退出且不发起网络请求。这一开关表示人工启用单次真实调用，不替代预算控制。
 
 应用的业务入口为 `runCycle({ loadConfig, state, hn, model, clock? })`，返回保存后的 `digest`、`markdown`、候选处理数量 `status` 及本轮 `usage`。`StateStore.load()` / `save()` 都是异步契约，`save` 只有在持久化完成后才应成功返回；SQLite 适配器还提供 `close()`。远端快照适配器可在这一存储 seam 延续持久化契约，无需再暴露每个业务步骤。
 
@@ -44,6 +44,6 @@ HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固�
 
 SQLite 事务保存候选及其待处理/已处理进度、主题关联、摘要与最近成功运行时间。先保存采集结果，再请求模型；模型失败或摘要校验失败后，下一周期可以重新处理已持久保存的候选。已处理帖子重复出现时不会重复生成摘要；没有待处理候选时不调用模型。
 
-SQLite 使用 DELETE journal 和 FULL synchronous，保存完成后是包含已提交事务的单个数据库文件。关闭进程并保存完整 SQLite 文件即可保留 T01 状态；重新打开同一路径可继续运行。删除 Markdown 后，下次成功周期会从 SQLite 再生成它。当前本地存储没有跨进程/远端版本冲突检测，后续状态分支任务会增加相应保证。
+SQLite 使用 DELETE journal 和 FULL synchronous，保存完成后是包含已提交事务的单个数据库文件。本地模式重新打开同一路径可继续运行；GitHub 模式每次从状态分支固定 SHA 恢复，再通过 `expectedHeadOid` 检测过期版本，且每次 `save()` 都等待远端提交。删除 Markdown 后，下次成功周期会从 SQLite 再生成它。本地模式须独占数据库；远端写者还须共享工作流串行约束。
 
 不要将 API key 或其他凭据放入配置、SQLite 或日志。部署到公有仓库前，还需完成后续任务中对公有状态、调度与运行恢复的验收。
