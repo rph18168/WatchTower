@@ -121,15 +121,22 @@ test('每次外部发送前已远端提交对应的进行中尝试，发送确�
   }
 });
 
-test('明确永久故障停止自动重试，持久恢复指令只授予一次新机会并保留故障历史', async () => {
+test('明确永久故障停止自动重试，持久 /resume 只授予一次新机会，重复更新不重试并保留故障历史', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-permanent-send-'));
   const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const notification = pendingNotification();
   let sends = 0;
-  const telegram: RunCycleOptions['telegram'] = { send: async () => ++sends < 3
-    ? { status: 'failed', failureCode: 'recipient-unavailable', permanent: true }
-    : { status: 'sent', messageId: 'recipient-fixed' } };
+  let resumeUpdate: number | null = null;
+  const sender: RunCycleOptions['telegram'] = { send: async ({ text }) => {
+    if (text !== notification.text) return { status: 'sent', messageId: 'control-reply' };
+    return ++sends < 3 ? { status: 'failed', failureCode: 'recipient-unavailable', permanent: true }
+      : { status: 'sent', messageId: 'recipient-fixed' };
+  } };
+  const telegram = { ...sender, getUpdates: async () => resumeUpdate === null ? [] : [
+    { updateId: resumeUpdate, command: 'resume' as const }, { updateId: resumeUpdate, command: 'resume' as const },
+  ] };
   try {
-    await state.save({ schemaVersion: 1, candidates: [], digest: [], notifications: [pendingNotification()], lastRunAt: createdAt });
+    await state.save({ schemaVersion: 1, candidates: [], digest: [], notifications: [notification], lastRunAt: createdAt });
     await runCycle({ ...idle, state, telegram, clock: () => new Date(createdAt) });
     const blocked = await runCycle({ ...idle, state, telegram, clock: () => new Date('2026-11-01T01:01:00.000Z') });
     assert.equal(sends, 1);
@@ -139,16 +146,16 @@ test('明确永久故障停止自动重试，持久恢复指令只授予一次�
       [1, '2026-11-01T01:02:00.000Z', 'pending'],
       [2, '2026-11-01T01:20:00.000Z', 'sent'],
     ] as const) {
-      const resumed = await state.load();
-      resumed.control = { manuallyPaused: false, deliveryRetryGeneration: generation };
-      await state.save(resumed);
+      resumeUpdate = 100 + generation;
       const result = await runCycle({ ...idle, state, telegram, clock: () => new Date(at) });
       assert.equal(sends, generation + 1);
+      assert.equal((await state.load()).control?.deliveryRetryGeneration, generation);
       assert.equal(result.notifications[0]?.status, expectedStatus);
       assert.equal(result.notifications[0]?.attempts.at(-1)?.retryGeneration, generation);
       if (generation === 1) {
         await runCycle({ ...idle, state, telegram, clock: () => new Date('2026-11-01T01:10:00.000Z') });
         assert.equal(sends, 2);
+        assert.equal((await state.load()).control?.deliveryRetryGeneration, 1);
       }
     }
     assert.equal((await state.load()).notifications[0]?.attempts.length, 3);
@@ -329,6 +336,37 @@ test('旧夜间通知的不可恢复尝试不能被新建晨间汇总绕过，�
     assert.deepEqual(sent, [legacy.text]);
     assert.equal(delivered.notifications[0]?.status, 'sent');
     assert.equal(delivered.notifications[0]?.attempts.length, 2);
+  } finally {
+    state.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('新模型请求暂时失败不会饿死已持久通知，仍在同一周期提交明确的发送确认', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-model-fault-outbox-'));
+  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const received: string[] = [];
+  try {
+    await state.save({
+      schemaVersion: 1, digest: [], notifications: [pendingNotification()], lastRunAt: createdAt,
+      candidates: [{
+        story: { id: 'new-work', title: 'New observatory data', hnUrl: 'https://news.ycombinator.com/item?id=602', score: 40, publishedAt: createdAt },
+        discoveredAt: createdAt, status: 'pending', processedAt: null, topicIds: [],
+      }],
+    });
+    await assert.rejects(runCycle({ ...idle, state, clock: () => new Date(createdAt),
+      model: {
+        getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }),
+        analyze: async () => { throw new Error('Temporary model transport failure'); },
+      },
+      telegram: { send: async ({ text }) => { received.push(text); return { status: 'sent', messageId: 'independent-outbox' }; } },
+    }), /Temporary model transport failure/);
+    assert.deepEqual(received, ['第601批观测资料已公开。']);
+    const durable = await state.load();
+    assert.equal(durable.notifications[0]?.status, 'sent');
+    assert.equal(durable.notifications[0]?.attempts[0]?.status, 'sent');
+    assert.equal(durable.candidates[0]?.status, 'pending');
+    assert.equal(durable.control?.fault?.code, 'model-processing');
   } finally {
     state.close();
     await rm(directory, { recursive: true, force: true });
