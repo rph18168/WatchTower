@@ -15,6 +15,15 @@ export class StructuredModelError extends Error {
   }
 }
 
+/** Same wire envelope as the SDK, with a small allowance for SDK metadata. */
+export function structuredRequestBytes(request: { model: string; instructions: string; input: string; schema: Record<string, unknown>; name: string }, maxOutputTokens: number): number {
+  return Buffer.byteLength(JSON.stringify({
+    model: request.model, instructions: request.instructions, input: request.input,
+    text: { format: { type: 'json_schema', name: request.name, strict: true, schema: request.schema } },
+    provider: { require_parameters: true }, max_output_tokens: maxOutputTokens, stream: true, store: false,
+  }), 'utf8') + 128;
+}
+
 export function createStructuredExecutor(options: { apiKey: string; fetch?: typeof fetch }) {
   if (!options.apiKey.trim()) throw new Error('OPENROUTER_API_KEY is required');
   return async (request: {

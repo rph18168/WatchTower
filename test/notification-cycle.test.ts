@@ -3,7 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createGitHubStateStore, createSqliteStateStore, createTelegramSender, runCycle } from '../src/index.ts';
+import { createGitHubStateStore, createTelegramSender, runCycle } from '../src/index.ts';
+import { createEstablishedStateStore as createSqliteStateStore, establishMonitoringState } from './support/state.ts';
 
 const now = new Date('2026-11-01T01:00:00.000Z');
 const story = {
@@ -35,7 +36,7 @@ const significantModel = {
 test('重大动态读取来源后形成通用中文通知，SQLite 持久保存待发送状态后才发送并确认', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-notification-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   const sent: string[] = [];
   try {
     const result = await runCycle({
@@ -62,7 +63,7 @@ test('重大动态读取来源后形成通用中文通知，SQLite 持久保存�
     assert.equal(result.notifications[0]?.status, 'sent');
     assert.equal(result.notifications[0]?.sentAt, now.toISOString());
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const reopened = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [] },
       model: { analyze: async () => { throw new Error('没有新模型工作'); } },
@@ -78,7 +79,7 @@ test('重大动态读取来源后形成通用中文通知，SQLite 持久保存�
 test('发送抛出或确认结果不确定时保持待发送状态，SQLite 重开后能够再次发送', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-send-unknown-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   try {
     const first = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [story] }, model: significantModel,
@@ -88,7 +89,7 @@ test('发送抛出或确认结果不确定时保持待发送状态，SQLite 重�
     assert.equal(first.notifications[0]?.status, 'pending');
     assert.deepEqual(first.notifications[0]?.attempts, [{ at: now.toISOString(), status: 'unknown', failureCode: 'network' }]);
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const recovered = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [] },
       model: { analyze: async () => { throw new Error('核实已持久保存，不应再调用模型'); } },
@@ -104,7 +105,7 @@ test('发送抛出或确认结果不确定时保持待发送状态，SQLite 重�
 
 test('完整周期使用真实 Telegram 协议只发送至闭包中的个人私聊，不把身份写入公开状态', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-telegram-'));
-  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
   let sends = 0;
   const telegram = createTelegramSender({ botToken: 'test-only-bot-token', personalChatId: '987654321', fetch: async (input, init) => {
     sends++;
@@ -130,7 +131,7 @@ test('完整周期使用真实 Telegram 协议只发送至闭包中的个人私�
 
 test('保存待发送通知失败时不发送；确认保存失败后从持久待发送状态恢复，接受偶发重复', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-send-checkpoint-'));
-  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
   let sends = 0;
   const options = {
     loadConfig: async () => config, state, hn: { discover: async () => [story] }, model: significantModel,
@@ -161,7 +162,7 @@ test('保存待发送通知失败时不发送；确认保存失败后从持久�
 test('普通相关仅留摘要，不相关不收录；不可核实或未获支持的重大动态不通知', async () => {
   for (const scenario of ['ordinary', 'unrelated', 'no-link', 'unavailable', 'truncated', 'forged', 'wrong-source', 'unknown-role', 'unsupported'] as const) {
     const directory = await mkdtemp(join(tmpdir(), 'watchtower-evidence-'));
-    const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+    const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
     let reads = 0;
     let verifies = 0;
     let sends = 0;
@@ -190,7 +191,7 @@ test('普通相关仅留摘要，不相关不收录；不可核实或未获支�
       assert.equal(result.digest.length, scenario === 'unrelated' ? 0 : 1);
       assert.equal(reads, ['ordinary', 'unrelated', 'no-link'].includes(scenario) ? 0 : 1);
       assert.equal(verifies, ['forged', 'wrong-source', 'unknown-role', 'unsupported'].includes(scenario) ? 1 : 0);
-      if (!['ordinary', 'unrelated'].includes(scenario)) assert.match(result.digest[0]!.summary, /未能完整核实|证据不足|未提供可核实/);
+      if (!['ordinary', 'unrelated'].includes(scenario)) assert.match(result.digest[0]!.summary, /未能完整核实|证据不足|未提供可核实|稍后重试核实/);
     } finally {
       state.close();
       await rm(directory, { recursive: true, force: true });
@@ -207,7 +208,7 @@ test('Telegram 只有明确的本人私聊成功响应才能确认送达，错�
     { ok: false, error_code: 403, description: 'private token-bearing server details' },
   ]) {
     const directory = await mkdtemp(join(tmpdir(), 'watchtower-telegram-unconfirmed-'));
-    const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+    const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
     try {
       const telegram = createTelegramSender({ botToken: 'test-only-bot-token', personalChatId: '987654321', fetch: async () => Response.json(response) });
       const result = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [story] }, model: significantModel, sources: { read: async () => source }, telegram, clock: () => now });
@@ -240,6 +241,7 @@ test('GitHub 远端快照保存完成后才发送，新的 runner 可读取送�
   const state = createGitHubStateStore({ path: join(directory, 'runner-one.sqlite'), github });
   const observer = createGitHubStateStore({ path: join(directory, 'runner-two.sqlite'), github });
   try {
+    await establishMonitoringState(state);
     const result = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [story] }, model: significantModel,
       sources: { read: async () => source },
@@ -259,7 +261,7 @@ test('GitHub 远端快照保存完成后才发送，新的 runner 可读取送�
 test('摘要耗尽本轮额度后不绕过预算，下一周期从核实进度继续且不重复携带超大 HN 正文', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-verification-budget-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   let verifications = 0;
   const model = { ...significantModel, verifyDevelopment: async () => { verifications++; return { verification, usage }; } };
   try {
@@ -274,7 +276,7 @@ test('摘要耗尽本轮额度后不绕过预算，下一周期从核实进度�
     assert.equal(first.usage?.costUsd, 0.001);
     assert.equal((await state.load()).candidates[0]?.notificationReview?.status, 'pending');
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const next = await runCycle({
       loadConfig: async () => ({ ...config, usage: { runBudgetUsd: 0.01 } }), state,
       hn: { discover: async () => [] }, model: { ...model, analyze: async () => { throw new Error('摘要已经持久保存'); } },
@@ -291,7 +293,7 @@ test('摘要耗尽本轮额度后不绕过预算，下一周期从核实进度�
 
 test('单个核实来源超过输入预算时保持待核实，并继续处理后续可容纳的来源', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-verification-size-'));
-  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
   const secondStory = { ...story, id: '404', title: 'A second observatory opens infrared images', url: 'https://observatory.example/infrared', hnUrl: 'https://news.ycombinator.com/item?id=404' };
   const secondProposal = { change: '第二天文台开放红外观测影像。', whyItMatters: '研究者可直接查阅新的红外资料。' };
   const secondSource = { ...source, id: 'source:404', candidateId: '404', originalUrl: secondStory.url, finalUrl: secondStory.url, text: 'Our second observatory opens its infrared image archive to the public today.' };

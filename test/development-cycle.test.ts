@@ -3,7 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createSqliteStateStore, runCycle } from '../src/index.ts';
+import { runCycle } from '../src/index.ts';
+import { createEstablishedStateStore as createSqliteStateStore } from './support/state.ts';
 import type { CandidateStory, DevelopmentNotification, DigestModelAdapter, PendingNotification, SourceEvidence } from '../src/index.ts';
 
 const now = new Date('2026-11-01T01:00:00.000Z');
@@ -45,7 +46,7 @@ const developmentNotifications = ({ notifications }: { notifications: PendingNot
 test('同一动态跨帖子与关注主题合并来源、摘要和通知，SQLite 重开后重复讨论不再通知', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-development-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   const sent: string[] = [];
   const telegram = { send: async ({ text }: { text: string }) => { sent.push(text); return { status: 'sent' as const, messageId: `${sent.length}` }; } };
   try {
@@ -62,7 +63,7 @@ test('同一动态跨帖子与关注主题合并来源、摘要和通知，SQLit
     assert.match(sent[0]!, /item\?id=501/);
     assert.match(sent[0]!, /item\?id=502/);
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const third = { ...duplicate, id: '503', hnUrl: 'https://news.ycombinator.com/item?id=503' };
     const repeated = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [third] }, model,
@@ -81,13 +82,13 @@ test('同一动态跨帖子与关注主题合并来源、摘要和通知，SQLit
 test('同一动态的不同链接和不同表述经比较后仍合并，不因换帖重新通知', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-development-links-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   let sends = 0;
   const telegram = { send: async () => ({ status: 'sent' as const, messageId: `${++sends}` }) };
   try {
     await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [first] }, model, sources: { read: async () => sourceFor(first) }, telegram, clock: () => now });
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const discussion = { ...duplicate, url: 'https://transport.example/year-round-bikes' };
     const compared = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [discussion] },
@@ -112,7 +113,7 @@ test('同一动态的不同链接和不同表述经比较后仍合并，不因�
 test('热度上涨不产生模型工作；同一来源 URL 有据的实质更新关联原动态并再次通知', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-development-update-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   let sends = 0;
   const telegram = { send: async () => ({ status: 'sent' as const, messageId: `${++sends}` }) };
   const updated = { ...duplicate, title: 'City adds 50 bicycle stations' };
@@ -132,7 +133,7 @@ test('热度上涨不产生模型工作；同一来源 URL 有据的实质更新
     assert.equal(popular.usage, null);
     assert.equal(sends, 1);
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const update = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [updated] }, model: updateModel, sources: { read: async () => sourceFor(updated, newQuote) }, telegram, clock: () => new Date('2026-11-01T01:30:00.000Z') });
     assert.equal(sends, 2);
     assert.equal(update.digest.length, 1);
@@ -149,7 +150,7 @@ test('热度上涨不产生模型工作；同一来源 URL 有据的实质更新
 
 test('已处理帖子正文变化会重新判断，帖子 ID 与通知修订进度互不覆盖', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-story-update-'));
-  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
   let sends = 0;
   const telegram = { send: async () => ({ status: 'sent' as const, messageId: `${++sends}` }) };
   const changed = { ...first, title: 'Bicycle service adds 50 stations', text: 'The public bicycle service has opened fifty additional stations across the city.' };
@@ -182,7 +183,7 @@ test('已处理帖子正文变化会重新判断，帖子 ID 与通知修订进�
 
 test('普通相关内容也按动态合并摘要与来源，已知事实不会因后来换帖提议重大而首次通知', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-digest-development-'));
-  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
   const ordinaryModel: DigestModelAdapter = {
     ...model,
     analyze: async ({ candidates }) => ({ decisions: candidates.map(({ id }) => ({ candidateId: id, topicIds: id === first.id ? ['mobility'] : ['public-service'], summary: '公共自行车服务现扩展为全年运营，冬季居民也可使用。', significance: null })), usage }),
@@ -208,7 +209,7 @@ test('普通相关内容也按动态合并摘要与来源，已知事实不会�
 test('旧 SQLite 中已有的通知确认继续作为已知动态去重，不要求重建或再次送达', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-legacy-development-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   let sends = 0;
   const telegram = { send: async () => ({ status: 'sent' as const, messageId: `${++sends}` }) };
   try {
@@ -220,7 +221,7 @@ test('旧 SQLite 中已有的通知确认继续作为已知动态去重，不要
     for (const notification of developmentNotifications(legacy)) { delete notification.developmentId; delete notification.revisionId; delete notification.candidateIds; delete notification.kind; delete notification.origin; }
     await state.save(legacy);
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const recovered = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [duplicate] }, model, sources: { read: async () => sourceFor(duplicate) }, telegram, clock: () => now });
     assert.equal(sends, 1);
     assert.equal(recovered.notifications.length, 1);
@@ -236,7 +237,7 @@ test('旧 SQLite 中已有的通知确认继续作为已知动态去重，不要
 test('旧 SQLite 的待核实进度恢复后仍可形成第一条通知，不把待核实摘要误记为已通知动态', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-legacy-review-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   try {
     await runCycle({ loadConfig: async () => ({ ...config, usage: { runBudgetUsd: 0.001 } }), state, hn: { discover: async () => [first] }, model, clock: () => now });
     const legacy = await state.load();
@@ -244,7 +245,7 @@ test('旧 SQLite 的待核实进度恢复后仍可形成第一条通知，不把
     for (const candidate of legacy.candidates) { delete candidate.developmentReview; delete candidate.digestSummary; }
     await state.save(legacy);
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const recovered = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [] }, model: { ...model, analyze: async () => { throw new Error('摘要已生成'); } }, sources: { read: async () => sourceFor(first) }, telegram: { send: async () => ({ status: 'sent', messageId: 'restored' }) }, clock: () => now });
     assert.equal(recovered.notifications.length, 1);
     assert.equal(recovered.notifications[0]?.status, 'sent');
@@ -257,7 +258,7 @@ test('旧 SQLite 的待核实进度恢复后仍可形成第一条通知，不把
 
 test('来源 URL 复用及相同概括措辞不能把不同的有据新事件永久屏蔽', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-reused-url-'));
-  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
   const broadChange = '城市公共交通新增服务。';
   const ferry = { ...duplicate, title: 'City starts a new ferry service' };
   const makeModel = (story: CandidateStory, summary: string): DigestModelAdapter => ({
@@ -284,7 +285,7 @@ test('来源 URL 复用及相同概括措辞不能把不同的有据新事件永
 test('历史比较按有界批次共享步数预算，SQLite 重开后继续剩余比较并复用已核实证据', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-development-budget-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   const history = Array.from({ length: 11 }, (_, index) => ({ ...first, id: `${601 + index}`, url: `https://city.example/route-${index + 1}`, hnUrl: `https://news.ycombinator.com/item?id=${601 + index}` }));
   const batches: number[] = [];
   const target = { ...duplicate, id: '900', url: 'https://transport.example/eleventh-route', hnUrl: 'https://news.ycombinator.com/item?id=900' };
@@ -297,7 +298,7 @@ test('历史比较按有界批次共享步数预算，SQLite 重开后继续剩�
   };
   try {
     await runCycle({
-      loadConfig: async () => ({ ...config, usage: { maxSteps: 100 } }), state, hn: { discover: async () => history },
+      loadConfig: async () => ({ ...config, usage: { maxSteps: 100, maxOutputTokens: 20_000 } }), state, hn: { discover: async () => history },
       model: { ...model, analyze: async ({ candidates }) => ({ decisions: candidates.map(({ id }, index) => ({ candidateId: id, topicIds: ['mobility'], summary: `城市新增第${index + 1}条独立线路。`, significance: null })), usage }), resolveDevelopment: async () => ({ resolution: { developmentId: null, revisionId: null, relation: 'new' }, usage }) }, clock: () => now,
     });
     const limited = await runCycle({
@@ -310,7 +311,7 @@ test('历史比较按有界批次共享步数预算，SQLite 重开后继续剩�
     assert.equal(limited.status.budget.pauseReason, 'steps');
     assert.equal(limited.usage?.costUsd, 0.003);
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const recovered = await runCycle({
       loadConfig: async () => ({ ...config, usage: { maxSteps: 1 } }), state, hn: { discover: async () => [] },
       model: { getAllowance: model.getAllowance, analyze: async () => { throw new Error('无需重复摘要'); }, verifyDevelopment: async () => { throw new Error('证据已核实'); }, resolveDevelopment: compare },
@@ -329,7 +330,7 @@ test('历史比较按有界批次共享步数预算，SQLite 重开后继续剩�
 test('既有动态的拟议更新缺少来源证据时只更新关联摘要，重新打开后也不产生通知', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-unconfirmed-update-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   let sends = 0;
   const telegram = { send: async () => ({ status: 'sent' as const, messageId: `${++sends}` }) };
   try {
@@ -337,7 +338,7 @@ test('既有动态的拟议更新缺少来源证据时只更新关联摘要，�
     const result = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [duplicate] },
       model: { ...model, analyze: async () => ({ decisions: [{ candidateId: duplicate.id, topicIds: ['public-service'], summary: '公共自行车可能增加新站点，尚待来源证实。', significance: { change: '公共自行车新增站点。', whyItMatters } }], usage }), verifyDevelopment: async () => { throw new Error('无法读取来源时不应核实'); }, resolveDevelopment: async ({ knownDevelopments }) => ({ resolution: { ...knownDevelopments[0]!, relation: 'substantive-update' }, usage }) },
-      sources: { read: async () => ({ ...sourceFor(duplicate), status: 'unavailable', text: '', failureCode: 'network' }) }, telegram, clock: () => now,
+      sources: { read: async () => ({ ...sourceFor(duplicate), status: 'unavailable', text: '', failureCode: 'unsupported-content' }) }, telegram, clock: () => now,
     });
     assert.equal(sends, 1);
     assert.equal(result.notifications.length, 1);
@@ -345,7 +346,7 @@ test('既有动态的拟议更新缺少来源证据时只更新关联摘要，�
     assert.match(result.digest[0]!.summary, /尚待来源证实.*来源正文未能完整核实/);
     assert.ok(result.digest[0]?.sources.some(({ url }) => url === duplicate.hnUrl));
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const reopened = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [] }, model: { analyze: async () => { throw new Error('无新工作'); } }, telegram, clock: () => now });
     assert.equal(reopened.notifications.length, 1);
     assert.equal(sends, 1);
@@ -359,7 +360,7 @@ test('既有动态的拟议更新缺少来源证据时只更新关联摘要，�
 test('重复判定已持久化后中断，恢复时直接合并而不再次付费比较其他历史', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-identity-checkpoint-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   const history = Array.from({ length: 9 }, (_, index) => ({ ...first, id: `${701 + index}`, url: `https://city.example/service-${index + 1}`, hnUrl: `https://news.ycombinator.com/item?id=${701 + index}` }));
   const target = { ...duplicate, id: '901', url: 'https://transport.example/first-service', hnUrl: 'https://news.ycombinator.com/item?id=901' };
   try {
@@ -370,7 +371,7 @@ test('重复判定已持久化后中断，恢复时直接合并而不再次付�
       hn: { discover: async () => [target] }, model: { ...model, analyze: async () => ({ decisions: [{ candidateId: target.id, topicIds: ['mobility'], summary: change, significance: { change, whyItMatters } }], usage }), resolveDevelopment: async ({ knownDevelopments }) => ({ resolution: { ...knownDevelopments[0]!, relation: 'duplicate' }, usage }) }, sources: { read: async () => sourceFor(target) }, clock: () => now,
     }), /Runner stopped after durable identity checkpoint/);
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const recovered = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [] }, model: { getAllowance: model.getAllowance, analyze: async () => { throw new Error('无需重复摘要'); }, resolveDevelopment: async () => { throw new Error('重复判定已持久化'); } }, clock: () => now });
     assert.equal(recovered.digest.length, 9);
     assert.equal(recovered.notifications.length, 0);

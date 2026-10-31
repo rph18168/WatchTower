@@ -73,11 +73,11 @@ test('两个完整周期在不同 runner 工作目录中从 GitHub SQLite 快照
 test('远端保存失败使用可诊断的安全错误，新 runner 从上次已提交候选恢复而非采用未提交摘要', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-github-save-'));
   const remote = githubSnapshots();
-  let attempts = 0;
+  let failNextCommit = false;
   const github = {
     readSnapshot: remote.readSnapshot,
     async commitSnapshot(request: Parameters<typeof remote.commitSnapshot>[0]) {
-      if (++attempts === 2) throw new Error('provider token: secret-test');
+      if (failNextCommit) { failNextCommit = false; throw new Error('provider token: secret-test'); }
       return remote.commitSnapshot(request);
     },
   };
@@ -85,7 +85,8 @@ test('远端保存失败使用可诊断的安全错误，新 runner 从上次已
   const recovered = createGitHubStateStore({ path: join(directory, 'runner-two', 'state.sqlite'), github });
   try {
     await assert.rejects(runCycle({
-      loadConfig: async () => config, state: first, hn: { discover: async () => [story] }, model,
+      loadConfig: async () => config, state: first, hn: { discover: async () => [story] },
+      model: { ...model, getAllowance: async () => { failNextCommit = true; return model.getAllowance!(); } },
       clock: () => new Date('2026-11-01T01:00:00.000Z'),
     }), { message: 'GitHub state save failed; reload the latest committed snapshot before retrying' });
     first.close();

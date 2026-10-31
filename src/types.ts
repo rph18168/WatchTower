@@ -66,11 +66,16 @@ export interface CandidateStory {
 export interface StoredCandidate {
   story: CandidateStory;
   discoveredAt: string;
-  status: 'pending' | 'processed';
+  status: 'pending' | 'processed' | 'archived';
   processedAt: string | null;
   topicIds: string[];
   developmentId?: string;
   digestSummary?: string;
+  /** The current content belongs to the installation's historical stock. */
+  initialBaseline?: boolean;
+  /** Observed content changes have their own freshness, unlike score changes. */
+  contentUpdatedAt?: string;
+  archivedAt?: string;
   developmentReview?: {
     status: 'pending' | 'complete';
     comparedRevisionIds: string[];
@@ -81,6 +86,8 @@ export interface StoredCandidate {
     status: 'pending' | 'complete';
     source?: SourceEvidence;
     verification?: DevelopmentVerification;
+    sourceFailures?: number;
+    nextSourceAttemptAt?: string;
   };
 }
 
@@ -143,8 +150,9 @@ export interface NotificationDelivery {
   id: string;
   text: string;
   createdAt: string;
-  status: 'pending' | 'sent';
+  status: 'pending' | 'sent' | 'expired';
   sentAt: string | null;
+  expiredAt?: string;
   messageId?: string;
   attempts: ({ at: string } & TelegramSendResult)[];
 }
@@ -157,6 +165,8 @@ export interface DevelopmentNotification extends NotificationDelivery {
   candidateIds?: string[];
   developmentId?: string;
   revisionId?: string;
+  /** The content/revision time, never refreshed by a duplicate discussion. */
+  developmentAt?: string;
   topicIds: string[];
   change: string;
   whyItMatters: string;
@@ -180,6 +190,7 @@ export interface OvernightSummaryNotification extends NotificationDelivery {
   kind: 'overnight-summary';
   origin: 'proactive';
   notificationIds: string[];
+  sections?: { notificationId: string; text: string }[];
 }
 
 export type PendingNotification = DevelopmentNotification | CommandReplyNotification | BudgetStatusNotification | OvernightSummaryNotification;
@@ -226,6 +237,12 @@ export interface MonitoringState {
   lastRunAt: string | null;
   budget?: ModelBudgetState;
   control?: { manuallyPaused: boolean };
+  initialBaseline?: {
+    since: string;
+    until: string;
+    status: 'building' | 'complete';
+    completedAt: string | null;
+  };
 }
 
 /** save resolves only after the state is durable. Failed saves reject. */
@@ -256,6 +273,8 @@ export interface CandidateDecision {
 export interface DigestModelAdapter {
   /** null means the key has no configured cap, not unlimited funded credit. */
   getAllowance?(): Promise<{ remainingUsd: number | null; usageMonthlyUsd: number }>;
+  /** Production request size, including structured schema and instructions. */
+  analyzeRequestBytes?(request: { model: string; topics: WatchTopic[]; candidates: CandidateStory[] }, maxOutputTokens: number): number;
   analyze(request: {
     model: string;
     topics: WatchTopic[];

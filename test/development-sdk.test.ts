@@ -3,11 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createOpenRouterAdapter, createSqliteStateStore, runCycle } from '../src/index.ts';
+import { createOpenRouterAdapter, runCycle } from '../src/index.ts';
+import { createEstablishedStateStore as createSqliteStateStore } from './support/state.ts';
 
 test('真实 Agent SDK 使用同一个通用契约识别并核实非计算机主题的重大动态', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-verification-sdk-'));
-  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
   const inputs: Record<string, unknown>[] = [];
   const change = '公共自行车计划新增全年服务。';
   const whyItMatters = '本地居民在冬季也能使用公共自行车。';
@@ -56,7 +57,7 @@ test('真实 Agent SDK 使用同一个通用契约识别并核实非计算机主
 test('真实 SDK 的动态身份比较与摘要、来源核实共用预算和实际费用回执', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-development-identity-sdk-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   const operationNames: string[] = [];
   const change = '公共自行车计划新增全年服务。';
   const whyItMatters = '居民冬季也能使用公共自行车。';
@@ -103,7 +104,7 @@ test('真实 SDK 的动态身份比较与摘要、来源核实共用预算和实
   try {
     await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [stories[0]!] }, model, sources, telegram, clock: () => new Date('2026-11-01T01:00:00.000Z') });
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const result = await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [stories[1]!] }, model, sources, telegram, clock: () => new Date('2026-11-01T01:15:00.000Z') });
     assert.deepEqual(operationNames, ['watchtower_digest', 'watchtower_development', 'watchtower_digest', 'watchtower_development', 'watchtower_development_identity']);
     assert.equal(sends, 1);

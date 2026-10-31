@@ -3,6 +3,7 @@ import { createModelBudget } from './budget.ts';
 import { modelUsageLimits } from './config.ts';
 import { recordCandidateDevelopment, restoreDevelopmentHistory } from './developments.ts';
 import { confirmSummaryMembers, deliveryAllowed, ownsDelivery, prepareOvernightSummaries } from './delivery.ts';
+import { archiveExpiredCandidates, beginInitialBaseline, candidateBatch, completeInitialBaseline, expireStaleNotifications } from './recovery.ts';
 
 export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
   const config = await options.loadConfig();
@@ -11,6 +12,8 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
   const state = await options.state.load();
   state.notifications ??= [];
   restoreDevelopmentHistory(state);
+  beginInitialBaseline(state, now);
+  await options.state.save(state);
   const discovered = await options.hn.discover({
     since: new Date(Date.parse(now) - 48 * 60 * 60 * 1000).toISOString(),
     until: now,
@@ -20,7 +23,7 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
   for (const story of discovered) {
     const candidate = knownCandidates.get(story.id);
     if (!candidate) {
-      const added = { story, discoveredAt: now, status: 'pending' as const, processedAt: null, topicIds: [] };
+      const added = { story, discoveredAt: now, status: 'pending' as const, processedAt: null, topicIds: [], initialBaseline: Date.parse(story.publishedAt) <= Date.parse(state.initialBaseline!.until) };
       state.candidates.push(added);
       knownCandidates.set(story.id, added);
     } else {
@@ -29,14 +32,20 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
         candidate.processedAt = null;
         delete candidate.notificationReview;
         delete candidate.developmentReview;
+        candidate.initialBaseline = false;
+        candidate.contentUpdatedAt = now;
+        delete candidate.archivedAt;
       }
       candidate.story = story;
     }
   }
+  archiveExpiredCandidates(state, now);
   // A model/network failure must not discard candidates already collected.
   await options.state.save(state);
-  const pending = state.candidates.filter(({ status }) => status === 'pending');
+  const allPending = state.candidates.filter(({ status }) => status === 'pending');
+  const pending = candidateBatch(allPending, config, options.model);
   const budget = createModelBudget({ state, store: options.state, config, model: options.model, clock: options.clock ?? (() => new Date()) });
+  if (allPending.length && !pending.length) state.budget!.pauseReason = 'input-size';
   if (pending.length > 0) {
     const input = { model: config.model, topics: config.topics, candidates: pending.map(({ story }) => story) };
     const result = await budget.execute(input, (execution) => options.model.analyze({ ...input, execution }));
@@ -73,21 +82,38 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
     }
   }
   if (options.sources && options.model.verifyDevelopment) {
-    for (const candidate of state.candidates.filter(({ notificationReview }) => notificationReview?.status === 'pending')) {
+    for (const candidate of state.candidates.filter(({ notificationReview, archivedAt }) => !archivedAt && notificationReview?.status === 'pending')) {
       if (['monthly-budget', 'run-budget', 'steps', 'unknown-cost'].includes(budget.status().pauseReason ?? '')) break;
       const review = candidate.notificationReview!;
+      const reviewAt = (options.clock ?? (() => new Date()))();
+      if (review.nextSourceAttemptAt && Date.parse(review.nextSourceAttemptAt) > reviewAt.getTime()) continue;
       if (!candidate.story.url) {
         review.status = 'complete';
         addUncertainty(state, candidate.story.id, '未提供可核实的链接来源。');
         continue;
       }
-      const source = review.verification && review.source ? review.source : await options.sources.read({ candidateId: candidate.story.id, url: candidate.story.url });
+      let source = review.source?.status === 'read' ? review.source : undefined;
+      if (!source) {
+        try { source = await options.sources.read({ candidateId: candidate.story.id, url: candidate.story.url }); }
+        catch { source = { id: `source:${candidate.story.id}`, candidateId: candidate.story.id, originalUrl: candidate.story.url, status: 'unavailable', title: '', text: '', truncated: false, failureCode: 'network' }; }
+      }
       review.source = source;
       if (source.status !== 'read' || source.truncated || !source.text.trim() || source.id !== `source:${candidate.story.id}` || source.candidateId !== candidate.story.id || source.originalUrl !== candidate.story.url) {
+        if (source.status === 'unavailable' && ['network', 'timeout'].includes(source.failureCode ?? '')) {
+          review.sourceFailures = (review.sourceFailures ?? 0) + 1;
+          if (review.sourceFailures < 3) {
+            review.nextSourceAttemptAt = new Date(reviewAt.getTime() + 15 * 60_000 * 2 ** (review.sourceFailures - 1)).toISOString();
+            addUncertainty(state, candidate.story.id, '来源暂时不可用，稍后重试核实。');
+            continue;
+          }
+        }
+        clearUncertainty(state, candidate.story.id, '来源暂时不可用，稍后重试核实。');
         review.status = 'complete';
         addUncertainty(state, candidate.story.id, '来源正文未能完整核实，暂不主动通知。');
         continue;
       }
+      delete review.nextSourceAttemptAt;
+      clearUncertainty(state, candidate.story.id, '来源暂时不可用，稍后重试核实。');
       // The linked page is the verification evidence. Do not repeat a possibly
       // large HN story body in this second, separately admitted model request.
       const { id, title, url, hnUrl, score, publishedAt } = candidate.story;
@@ -102,23 +128,27 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
       }
     }
   }
-  for (const candidate of state.candidates.filter(({ status, developmentReview }) => status === 'processed' && developmentReview?.status === 'pending')) {
+  for (const candidate of state.candidates.filter(({ status, developmentReview, archivedAt }) => !archivedAt && status === 'processed' && developmentReview?.status === 'pending')) {
     const review = candidate.notificationReview;
     const evidence = review?.source && review.verification && supportedVerification(review.verification, review.source)
       ? { verification: review.verification, source: review.source } : undefined;
     if (review?.status === 'pending' && !evidence) continue;
-    if (await recordCandidateDevelopment(state, candidate, now, { config, model: options.model, budget, store: options.state }, evidence)) {
+    if (await recordCandidateDevelopment(state, candidate, now, { config, model: options.model, budget, store: options.state, allowNotification: !candidate.initialBaseline }, evidence)) {
       candidate.developmentReview!.status = 'complete';
       if (review) review.status = 'complete';
     }
   }
   const budgetStatus = budget.status();
+  completeInitialBaseline(state, now);
+  expireStaleNotifications(state, (options.clock ?? (() => new Date()))());
   prepareOvernightSummaries(state, (options.clock ?? (() => new Date()))());
   state.lastRunAt = now;
   await options.state.save(state);
   if (options.telegram) {
     for (const notification of state.notifications.filter(({ status }) => status === 'pending')) {
       const attemptedAt = (options.clock ?? (() => new Date()))();
+      if (expireStaleNotifications(state, attemptedAt)) await options.state.save(state);
+      if (notification.status !== 'pending') continue;
       if (!ownsDelivery(notification) || !deliveryAllowed(notification, state, attemptedAt)) continue;
       let result: TelegramSendResult;
       try { result = await options.telegram.send({ text: notification.text }); }
@@ -138,9 +168,16 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
 
 function addUncertainty(state: MonitoringState, candidateId: string, note: string): void {
   const candidate = state.candidates.find(({ story }) => story.id === candidateId);
-  if (candidate?.digestSummary) candidate.digestSummary += `（${note}）`;
+  if (candidate?.digestSummary && !candidate.digestSummary.includes(note)) candidate.digestSummary += `（${note}）`;
   const entry = state.digest.find((entry) => entry.candidateId === candidateId);
-  if (entry && !entry.developmentId) entry.summary += `（${note}）`;
+  if (entry && !entry.developmentId && !entry.summary.includes(note)) entry.summary += `（${note}）`;
+}
+
+function clearUncertainty(state: MonitoringState, candidateId: string, note: string): void {
+  const candidate = state.candidates.find(({ story }) => story.id === candidateId);
+  if (candidate?.digestSummary) candidate.digestSummary = candidate.digestSummary.replace(`（${note}）`, '');
+  const entry = state.digest.find((entry) => entry.candidateId === candidateId && !entry.developmentId);
+  if (entry) entry.summary = entry.summary.replace(`（${note}）`, '');
 }
 
 function supportedVerification(verification: DevelopmentVerification, source: SourceEvidence): boolean {
@@ -190,7 +227,7 @@ function cycleResult(state: MonitoringState, usage: CycleResult['usage'], now: s
     status: {
       candidateCount: state.candidates.length,
       processedCandidateCount: processed,
-      pendingCandidateCount: state.candidates.length - processed,
+      pendingCandidateCount: state.candidates.filter(({ status }) => status === 'pending').length,
       lastRunAt: now,
       budget,
     },
