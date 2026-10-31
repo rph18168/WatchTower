@@ -1,6 +1,7 @@
 .scratch/
 .worktrees/
 node_modules/
+.watchtower/
 dist/
 coverage/
 .env
