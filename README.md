@@ -2,7 +2,9 @@
 
 按可配置的关注主题读取 Hacker News 候选帖子，将相关内容整理成中文摘要并保存到 SQLite。Markdown 是从已保存摘要生成的阅读副本。
 
-当前实现覆盖规格 #1 的 [T01 / #2](https://github.com/rph18168/WatchTower/issues/2)、[T02 / #3](https://github.com/rph18168/WatchTower/issues/3) 和 [T03 / #4](https://github.com/rph18168/WatchTower/issues/4) 的离线摘要、用量控制与持久化。GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，默认均关闭；完成全功能与最终验收前不启用付费自动运行。部署、调度限制、状态备份及恢复见 [部署说明](docs/deployment.md)。
+当前代码包括候选采集、摘要、来源核实、动态归并、Telegram 本人控制、用量预算、静默时段、投递重试和近期恢复。主要业务均通过完整周期与真实 SQLite 离线验证；[T10 / #11](https://github.com/rph18168/WatchTower/issues/11) 的真实部署验收仍须按[验收运行手册](docs/live-acceptance.md)完成并留下实际证据。
+
+GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，默认均关闭。手动入口还有仅处理本人 Telegram 命令的 `commands` 模式，可在新 runner 中查询持久摘要而不调用模型。部署、调度限制、状态备份及恢复见[部署说明](docs/deployment.md)。
 
 ## 环境与验证
 
@@ -12,9 +14,9 @@
 - `npm run typecheck`
 - `npm run build`
 
-测试通过同一个 `runCycle` 入口使用真实临时 SQLite、可控时钟以及 HN/模型适配器。OpenRouter 协议测试使用真实 Agent SDK 与可控 SSE 响应，不需要网络、API 凭据或付费调用。
+测试通过同一个 `runCycle` 入口使用真实临时 SQLite、可控时钟以及 HN/模型/Telegram/GitHub 外部适配器。协议测试使用真实 Agent SDK 与可控 SSE 响应；公开状态测试检查实际上传的 SQLite 二进制和旧删除页残留。全部测试无需外部网络、API 凭据或付费调用。
 
-依赖已固定并提交 lockfile：`@openrouter/agent 0.11.0`、`@openrouter/sdk 0.13.7`、`zod 4.6.7`；开发工具为 TypeScript 7.0.2 与 Node 类型 24.19.2。基础 SDK 同时通过 override 固定，防止 Agent 的版本范围改变已核对的调用行为。
+依赖已固定并提交 lockfile：`@openrouter/agent 0.11.0`、`@openrouter/sdk 0.13.7`、`zod 4.6.7`、`htmlparser2 10.0.0`、`undici 7.30.1`；开发工具为 TypeScript 7.0.2 与 Node 类型 24.19.2。基础 SDK 同时通过 override 固定，防止 Agent 的版本范围改变已核对的调用行为。
 
 ## 关注主题配置
 
@@ -38,7 +40,7 @@ Telegram 提供本人私聊的 `/digest`、`/status`、`/pause` 和 `/resume`。
 
 应用的业务入口为 `runCycle({ loadConfig, state, hn, model, clock? })`，返回保存后的 `digest`、`markdown`、候选处理数量 `status` 及本轮 `usage`。`StateStore.load()` / `save()` 都是异步契约，`save` 只有在持久化完成后才应成功返回；SQLite 适配器还提供 `close()`。远端快照适配器可在这一存储 seam 延续持久化契约，无需再暴露每个业务步骤。
 
-HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固定本轮上界，回看 48 小时、初始至少 20 分，读取所有可用分页并按帖子 ID 合并；如果服务端结果总数超出可用页面，显式失败，不把截断结果当作完整采集。摘要保存原文链接（存在有效 HTTP(S) URL 时）与 HN 讨论入口。T01 的摘要依据 HN 标题与帖子正文，不声称已核实链接原文。
+HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固定本轮上界，回看 48 小时、初始至少 20 分，读取所有可用分页并按帖子 ID 合并；如果服务端结果总数超出可用页面，显式失败，不把截断结果当作完整采集。摘要依据 HN 材料，保存原文与 HN 讨论入口；拟议重大动态还须读取经网络地址校验的原文并核对关键事实，证据不足保留为摘要。正文仅用于当轮内存；待处理 HN 正文可由本轮发现结果或[官方 HN item API](https://github.com/HackerNews/API#items)重新取得。
 
 模型适配器使用 [OpenRouter 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，传入主题和候选，要求通用中文摘要、本地校验候选/主题 ID 和基本中文内容。单次响应不授予工具权限；`provider.requireParameters=true`，输出 token 使用本轮配置（默认 4096），超时 60 秒，传输重试关闭，`allowFinalResponse=false`、`store=false`。这些参数未经过真实付费模型验收。
 
@@ -46,8 +48,8 @@ HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固�
 
 ## 持久状态与恢复
 
-SQLite 事务保存候选的待处理、已处理和历史状态、主题关联、摘要与最近成功运行时间。首次巡检建立最近 48 小时的初始基线和摘要，不推历史通知；故障或预算恢复按同一窗口继续，并以有界批次跨周期推进。先保存采集结果，再请求模型；已有摘要、动态去重与发送确认继续有效。没有待处理模型工作时不调用模型。基线续接、来源重试、汇总过期处理和发现边界见[恢复说明](docs/recovery.md)。
+SQLite 事务保存候选元数据与内容指纹、处理进度、主题关联、摘要、已验证的证据 checkpoint、费用和投递确认。公开状态不保存 HN／原文正文或逐字引文；证据以来源定位和 hash 续接，不能从 hash 还原历史正文。模型摘要须简洁且用自己的话表达。首次巡检建立最近 48 小时的初始基线和摘要，不推历史通知；故障或预算恢复按同一窗口继续，并以有界批次跨周期推进。已有摘要、动态去重与发送确认继续有效。没有待处理模型工作时不调用模型。原材料重取、基线续接、来源重试和汇总过期处理见[恢复说明](docs/recovery.md)。
 
-SQLite 使用 DELETE journal 和 FULL synchronous，保存完成后是包含已提交事务的单个数据库文件。本地模式重新打开同一路径可继续运行；GitHub 模式每次从状态分支固定 SHA 恢复，再通过 `expectedHeadOid` 检测过期版本，且每次 `save()` 都等待远端提交。删除 Markdown 后，下次成功周期会从 SQLite 再生成它。本地模式须独占数据库；远端写者还须共享工作流串行约束。
+SQLite 使用 DELETE journal、FULL synchronous 和安全清理，保存后重建数据库文件，避免旧正文留在空闲页。本地模式重新打开同一路径可继续运行；GitHub 模式每次从状态分支固定 SHA 恢复，再通过 `expectedHeadOid` 检测过期版本，且每次 `save()` 都等待远端提交。删除 Markdown 后，下次成功周期会从 SQLite 再生成它。本地模式须独占数据库；远端写者还须共享工作流串行约束。
 
-不要将 API key 或其他凭据放入配置、SQLite 或日志。部署到公有仓库前，还需完成后续任务中对公有状态、调度与运行恢复的验收。
+不要将 API key 或本人身份放入配置、SQLite 或日志。公开分支的旧提交不会因新快照精简而消失；本实现不自动重写 Git 历史。真实验收记录须区分 Telegram API 接受、本人可见确认，以及尚未自然发生的主动新闻路径。

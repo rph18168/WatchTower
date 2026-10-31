@@ -1,6 +1,7 @@
 import type { createModelBudget } from './budget.ts';
 import type { DevelopmentComparison, DevelopmentNotification, DevelopmentRecord, DevelopmentResolution, DevelopmentVerification, DigestEntry, DigestModelAdapter, MonitoringState, PendingNotification, SourceEvidence, StateStore, StoredCandidate, WatchTowerConfig } from './types.ts';
 import { candidateContentAt } from './recovery.ts';
+import { evidenceHash } from './state-payload.ts';
 
 /** Old SQLite payloads retain delivery receipts while gaining separate identity. */
 export function restoreDevelopmentHistory(state: MonitoringState): void {
@@ -179,7 +180,7 @@ export async function recordCandidateDevelopment(state: MonitoringState, candida
 }
 
 function sameKnownVersion(revision: DevelopmentRecord['revisions'][number], change: string, verification: DevelopmentVerification | undefined): boolean {
-  return revision.change === change && (!verification || verification.claims.every((claim) => revision.claims.some(({ statement, quote }) => statement === claim.statement && quote === claim.quote)));
+  return revision.change === change && (!verification || verification.claims.every((claim) => revision.claims.some((known) => known.statement === claim.statement && evidenceHash(known) === evidenceHash(claim))));
 }
 
 function validateResolution(resolution: DevelopmentResolution, batch: DevelopmentComparison[]): void {

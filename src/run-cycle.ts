@@ -1,10 +1,11 @@
-import type { CandidateDecision, CycleResult, DevelopmentVerification, DigestEntry, ModelBudgetStatus, MonitoringFault, MonitoringState, RunCycleOptions, SourceEvidence, TelegramSendResult, WatchTowerConfig } from './types.ts';
+import type { CandidateDecision, CandidateStory, CycleResult, DigestEntry, ModelBudgetStatus, MonitoringFault, MonitoringState, RunCycleOptions, SourceEvidence, TelegramSendResult, WatchTowerConfig } from './types.ts';
 import { BudgetAdmissionError, createModelBudget } from './budget.ts';
 import { modelUsageLimits } from './config.ts';
 import { updateBudgetNotice } from './budget-notices.ts';
 import { recordCandidateDevelopment, restoreDevelopmentHistory } from './developments.ts';
 import { confirmSummaryMembers, deliveryAllowed, deliveryAttempts, ownsDelivery, prepareOvernightSummaries, retryDue } from './delivery.ts';
 import { archiveExpiredCandidates, beginInitialBaseline, candidateBatch, completeInitialBaseline, expireStaleNotifications } from './recovery.ts';
+import { candidateFingerprint, conciseParaphrase, publicStatePayload, retainedEvidence } from './state-payload.ts';
 
 export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> {
   let persistenceFailed = false;
@@ -73,15 +74,37 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
       until: now,
       minScore: 20,
     }));
+    if (autonomousEnabled) {
+      archiveExpiredCandidates(state, now);
+      const cursor = state.candidates.findIndex(({ story }) => story.id === state.storyRefreshCursor);
+      const ordered = [...state.candidates.slice(cursor + 1), ...state.candidates.slice(0, cursor + 1)];
+      const missing = ordered.filter(({ status, archivedAt, hasStoryText, story }) => status === 'pending' && !archivedAt && hasStoryText && !story.text && !discovered.some(({ id }) => id === story.id));
+      let unavailable = false;
+      for (const candidate of missing.slice(0, 5)) {
+        state.storyRefreshCursor = candidate.story.id;
+        let story: CandidateStory | null | undefined;
+        try {
+          story = options.hn.readStory && await externalOperation(options, state, now, 'candidate-discovery', () => options.hn.readStory!({ id: candidate.story.id }));
+        } catch (error) {
+          if (persistenceFailed) throw error;
+          unavailable = true;
+          continue;
+        }
+        if (story?.id === candidate.story.id) discovered.push(story);
+        else unavailable = true;
+      }
+      if (unavailable) (state.control ??= { manuallyPaused: false }).fault = { code: 'candidate-discovery', at: now };
+    }
     const knownCandidates = new Map(state.candidates.map((candidate) => [candidate.story.id, candidate]));
     for (const story of discovered) {
       const candidate = knownCandidates.get(story.id);
+      const contentFingerprint = candidateFingerprint(story);
       if (!candidate) {
-        const added = { story, discoveredAt: now, status: 'pending' as const, processedAt: null, topicIds: [], initialBaseline: Date.parse(story.publishedAt) <= Date.parse(state.initialBaseline!.until) };
+        const added = { story, contentFingerprint, hasStoryText: Boolean(story.text), discoveredAt: now, status: 'pending' as const, processedAt: null, topicIds: [], initialBaseline: Date.parse(story.publishedAt) <= Date.parse(state.initialBaseline!.until) };
         state.candidates.push(added);
         knownCandidates.set(story.id, added);
       } else {
-        if (candidate.story.title !== story.title || candidate.story.url !== story.url || candidate.story.text !== story.text) {
+        if ((candidate.contentFingerprint ?? candidateFingerprint(candidate.story)) !== contentFingerprint) {
           candidate.initialBaseline = candidate.initialBaseline === true && candidate.developmentReview?.status !== 'complete';
           candidate.status = 'pending';
           candidate.processedAt = null;
@@ -91,20 +114,23 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
           delete candidate.archivedAt;
         }
         candidate.story = story;
+        candidate.contentFingerprint = contentFingerprint;
+        candidate.hasStoryText = Boolean(story.text);
       }
     }
     archiveExpiredCandidates(state, now);
     // A model/network failure must not discard candidates already collected.
     await options.state.save(state);
     const allPending = !autonomousEnabled ? [] : state.candidates.filter(({ status }) => status === 'pending');
-    const pending = candidateBatch(allPending, config, options.model);
-    if (allPending.length && !pending.length) state.budget!.pauseReason = 'input-size';
+    const available = allPending.filter(({ hasStoryText, story }) => !hasStoryText || Boolean(story.text));
+    const pending = candidateBatch(available, config, options.model);
+    if (available.length && !pending.length) state.budget!.pauseReason = 'input-size';
     phase = 'model-processing';
     if (pending.length > 0) {
       const input = { model: config.model, topics: config.topics, candidates: pending.map(({ story }) => story) };
       const result = await budget.execute(input, (execution) => externalOperation(options, state, now, 'model-processing', () => options.model.analyze({ ...input, execution })));
       if (result) {
-        validateDecisions(result.decisions, pending.map(({ story }) => story.id), config);
+        validateDecisions(result.decisions, pending.map(({ story }) => story), config);
         for (const decision of result.decisions) {
           const candidate = pending.find(({ story }) => story.id === decision.candidateId)!;
           candidate.status = 'processed';
@@ -139,6 +165,7 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
       for (const candidate of state.candidates.filter(({ notificationReview, archivedAt }) => !archivedAt && notificationReview?.status === 'pending')) {
         if (['monthly-budget', 'run-budget', 'steps', 'unknown-cost'].includes(budget.status().pauseReason ?? '')) break;
         const review = candidate.notificationReview!;
+        if (retainedEvidence(candidate, now)) continue;
         const reviewAt = (options.clock ?? (() => new Date()))();
         if (review.nextSourceAttemptAt && Date.parse(review.nextSourceAttemptAt) > reviewAt.getTime()) continue;
         if (!candidate.story.url) {
@@ -147,7 +174,7 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
           continue;
         }
         phase = 'source-reading';
-        let source = review.source?.status === 'read' ? review.source : undefined;
+        let source = review.source?.status === 'read' && review.source.text ? review.source : undefined;
         if (!source) {
           try { source = await options.sources.read({ candidateId: candidate.story.id, url: candidate.story.url }); }
           catch { source = { id: `source:${candidate.story.id}`, candidateId: candidate.story.id, originalUrl: candidate.story.url, status: 'unavailable', title: '', text: '', truncated: false, failureCode: 'network' }; }
@@ -179,7 +206,8 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
         const result = review.verification ? { verification: review.verification } : await budget.execute(input, (execution) => externalOperation(options, state, now, 'model-processing', () => options.model.verifyDevelopment!({ ...input, execution })));
         if (!result) continue;
         review.verification = result.verification;
-        if (!supportedVerification(result.verification, source)) {
+        if (!retainedEvidence(candidate, now)) {
+          delete review.verification;
           review.status = 'complete';
           addUncertainty(state, candidate.story.id, '关键事实证据不足，暂不主动通知。');
           continue;
@@ -190,8 +218,7 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
       phase = 'model-processing';
       for (const candidate of state.candidates.filter(({ status, developmentReview, archivedAt }) => !archivedAt && status === 'processed' && developmentReview?.status === 'pending')) {
         const review = candidate.notificationReview;
-        const evidence = review?.source && review.verification && supportedVerification(review.verification, review.source)
-          ? { verification: review.verification, source: review.source } : undefined;
+        const evidence = retainedEvidence(candidate, now);
         if (review?.status === 'pending' && !evidence) continue;
         if (await recordCandidateDevelopment(state, candidate, now, { config, model: options.model, budget, store: options.state, allowNotification: !candidate.initialBaseline }, evidence)) {
           candidate.developmentReview!.status = 'complete';
@@ -284,15 +311,6 @@ function clearUncertainty(state: MonitoringState, candidateId: string, note: str
   if (entry) entry.summary = entry.summary.replace(`（${note}）`, '');
 }
 
-function supportedVerification(verification: DevelopmentVerification, source: SourceEvidence): boolean {
-  return verification?.supported === true && verification.uncertainty === null &&
-    ['primary', 'secondary'].includes(verification.sourceRole) &&
-    [verification.change, verification.whyItMatters].every((text) => typeof text === 'string' && text.length <= 700 && /\p{Script=Han}/u.test(text)) &&
-    Array.isArray(verification.claims) && verification.claims.length > 0 && verification.claims.length <= 12 &&
-    verification.claims.some(({ statement }) => statement === verification.change) &&
-    verification.claims.every(({ statement, sourceId, quote }) => typeof statement === 'string' && statement.trim() && sourceId === source.id && typeof quote === 'string' && quote.trim().length >= 12 && source.text.includes(quote));
-}
-
 function validateConfiguration(config: WatchTowerConfig): void {
   if (!config || !Array.isArray(config.topics) || config.topics.length === 0 || typeof config.model !== 'string' || !config.model.trim()) {
     throw new Error('Configuration requires a model and at least one Watch Topic');
@@ -307,16 +325,20 @@ function validateConfiguration(config: WatchTowerConfig): void {
   modelUsageLimits(config);
 }
 
-function validateDecisions(decisions: CandidateDecision[], pendingIds: string[], config: WatchTowerConfig): void {
-  const remaining = new Set(pendingIds);
+function validateDecisions(decisions: CandidateDecision[], pendingStories: CandidateStory[], config: WatchTowerConfig): void {
+  const remaining = new Set(pendingStories.map(({ id }) => id));
   const topicIds = new Set(config.topics.map(({ id }) => id));
   if (!Array.isArray(decisions)) throw new Error('Model response must contain candidate decisions');
   for (const decision of decisions) {
     if (!decision || !remaining.delete(decision.candidateId) || !Array.isArray(decision.topicIds) || decision.topicIds.some((id) => !topicIds.has(id)) || new Set(decision.topicIds).size !== decision.topicIds.length) {
       throw new Error('Model response contains an unknown or duplicate candidate/topic');
     }
-    if (decision.topicIds.length > 0 && (typeof decision.summary !== 'string' || !decision.summary.trim() || !/\p{Script=Han}/u.test(decision.summary))) {
-      throw new Error('Related candidates require a Chinese digest summary');
+    const originals = [pendingStories.find(({ id }) => id === decision.candidateId)?.text ?? ''];
+    if (decision.topicIds.length > 0 && (!conciseParaphrase(decision.summary, originals) || !/\p{Script=Han}/u.test(decision.summary))) {
+      throw new Error('Related candidates require a concise Chinese digest summary in their own words');
+    }
+    if (decision.topicIds.length > 0 && decision.significance && [decision.significance.change, decision.significance.whyItMatters].some((text) => !conciseParaphrase(text, originals) || !/\p{Script=Han}/u.test(text))) {
+      throw new Error('Significance proposals require concise Chinese summaries');
     }
   }
   if (remaining.size > 0) throw new Error('Model response omitted candidate decisions');
@@ -324,10 +346,11 @@ function validateDecisions(decisions: CandidateDecision[], pendingIds: string[],
 
 function cycleResult(state: MonitoringState, usage: CycleResult['usage'], now: string, budget: ModelBudgetStatus): CycleResult {
   const processed = state.candidates.filter(({ status }) => status === 'processed').length;
+  const snapshot = publicStatePayload(state);
   return {
-    digest: state.digest,
-    markdown: renderDigest(state.digest),
-    notifications: state.notifications,
+    digest: snapshot.digest,
+    markdown: renderDigest(snapshot.digest),
+    notifications: snapshot.notifications,
     status: {
       manuallyPaused: state.control?.manuallyPaused === true,
       fault: state.control?.fault ?? null,

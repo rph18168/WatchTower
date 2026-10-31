@@ -65,6 +65,10 @@ export interface CandidateStory {
 
 export interface StoredCandidate {
   story: CandidateStory;
+  /** Versioned identity of title, canonical source URL and complete HN body. */
+  contentFingerprint?: string;
+  /** The HN body is transient and must be fetched again before analysis. */
+  hasStoryText?: boolean;
   discoveredAt: string;
   status: 'pending' | 'processed' | 'archived';
   processedAt: string | null;
@@ -86,6 +90,7 @@ export interface StoredCandidate {
     status: 'pending' | 'complete';
     source?: SourceEvidence;
     verification?: DevelopmentVerification;
+    checkpoint?: VerifiedEvidenceCheckpoint;
     sourceFailures?: number;
     nextSourceAttemptAt?: string;
   };
@@ -105,6 +110,7 @@ export interface SourceEvidence {
   status: 'read' | 'unavailable';
   title: string;
   text: string;
+  contentHash?: string;
   truncated: boolean;
   failureCode?: 'unsafe-url' | 'network' | 'timeout' | 'redirect' | 'unsupported-content' | 'too-large' | 'empty';
 }
@@ -117,7 +123,16 @@ export interface DevelopmentVerification extends SignificanceProposal {
   supported: boolean;
   uncertainty: string | null;
   sourceRole: 'primary' | 'secondary' | 'unknown';
-  claims: { statement: string; sourceId: string; quote: string }[];
+  claims: { statement: string; sourceId: string; quote: string; evidenceHash?: string }[];
+}
+
+/** Validated locally against a host-checked source before any body is discarded. */
+export interface VerifiedEvidenceCheckpoint {
+  validationVersion: 1;
+  verifiedAt: string;
+  candidateFingerprint: string;
+  source: SourceEvidence;
+  verification: DevelopmentVerification;
 }
 
 /** Bounded identity context, never an additional unverified source. */
@@ -259,6 +274,8 @@ export interface MonitoringState {
   notifications: PendingNotification[];
   developments?: DevelopmentRecord[];
   lastRunAt: string | null;
+  /** Round-robin progress for bounded HN body rehydration across runners. */
+  storyRefreshCursor?: string;
   budget?: ModelBudgetState;
   initialBaseline?: {
     since: string;
@@ -285,6 +302,8 @@ export interface StateStore {
 
 export interface HackerNewsAdapter {
   discover(request: { since: string; until: string; minScore: number }): Promise<CandidateStory[]>;
+  /** Rehydrate a queued body that is intentionally absent from public state. */
+  readStory?(request: { id: string }): Promise<CandidateStory | null>;
 }
 
 /** A numeric aggregate alone does not establish that every call reported cost. */

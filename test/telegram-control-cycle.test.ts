@@ -226,7 +226,7 @@ test('/digest 将长摘要分成 Telegram 可发送的消息，完整保留已�
       hn: { discover: async () => Array.from({ length: 7 }, (_, index) => ({ id: String(710 + index), title: `Public archive ${index}`, hnUrl: `https://news.ycombinator.com/item?id=${710 + index}`, score: 30, publishedAt: now.toISOString() })) },
       model: {
         getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }),
-        analyze: async ({ candidates }) => ({ decisions: candidates.map(({ id }) => ({ candidateId: id, topicIds: ['science'], summary: `条目${id}：${'公开科学资料已发布，研究者可以查阅。'.repeat(45)}` })), usage: { costUsd: 0.01, inputTokens: 100, outputTokens: 8000, costComplete: true } }),
+        analyze: async ({ candidates }) => ({ decisions: candidates.map(({ id }) => ({ candidateId: id, topicIds: ['science'], summary: `条目${id}：${'公开科学资料已发布，研究者可以查阅。'.repeat(30)}` })), usage: { costUsd: 0.01, inputTokens: 100, outputTokens: 8000, costComplete: true } }),
       }, clock: () => now,
     });
     const result = await runCycle({

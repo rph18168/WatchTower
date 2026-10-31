@@ -14,9 +14,33 @@ const searchPage = z.object({
   nbHits: z.number().int().nonnegative().optional(),
 });
 
+const itemResponse = z.object({
+  id: z.number().int().nonnegative(), type: z.string().optional(),
+  deleted: z.boolean().optional(), dead: z.boolean().optional(),
+  title: z.string().optional(), url: z.string().nullish(), text: z.string().nullish(),
+  score: z.number().optional(), time: z.number().int().nonnegative().optional(),
+});
+
 export function createHackerNewsAdapter(options: { fetch?: typeof fetch } = {}): HackerNewsAdapter {
   const fetcher = options.fetch ?? globalThis.fetch;
   return {
+    async readStory({ id }) {
+      if (!/^\d{1,20}$/.test(id)) throw new Error('Invalid Hacker News story ID');
+      const response = await fetcher(`https://hacker-news.firebaseio.com/v0/item/${id}.json`, { signal: AbortSignal.timeout(20_000) });
+      if (!response.ok) throw new Error(`Hacker News item request failed (HTTP ${response.status})`);
+      const raw = await response.json();
+      if (raw === null) return null;
+      const item = itemResponse.parse(raw);
+      if (String(item.id) !== id) throw new Error('Hacker News item identity mismatch');
+      if (item.deleted || item.dead || item.type !== 'story' || !item.title || item.score === undefined || item.time === undefined) return null;
+      const url = safeHttpUrl(item.url);
+      return {
+        id, title: item.title, ...(url ? { url } : {}),
+        hnUrl: `https://news.ycombinator.com/item?id=${id}`,
+        ...(item.text ? { text: item.text } : {}), score: item.score,
+        publishedAt: new Date(item.time * 1000).toISOString(),
+      };
+    },
     async discover({ since, until, minScore }) {
       const stories = new Map<string, CandidateStory>();
       const start = Math.floor(Date.parse(since) / 1000);

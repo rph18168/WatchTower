@@ -137,7 +137,7 @@ test('模型未生成中文摘要时保留待处理候选，SQLite 重开后下�
     const recovered = await runCycle({
       loadConfig: async () => config,
       state,
-      hn: { discover: async () => [] },
+      hn: { discover: async () => [], readStory: async () => stories[0]! },
       model: { getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }), analyze: async () => ({ decisions: [{ candidateId: '101', topicIds: ['computing'], summary: '编译器新版降低内存需求，可供开发者评估。' }], usage: { costUsd: 0.001, inputTokens: 100, outputTokens: 20, costComplete: true } }) },
       clock: () => new Date('2026-11-01T01:15:00.000Z'),
     });
