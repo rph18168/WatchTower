@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { createGitHubSnapshotAdapter, createGitHubStateStore, createHackerNewsAdapter, createOpenRouterAdapter, createSqliteStateStore, GitHubStateError, readConfigFile, runCycle } from './index.ts';
+import { createGitHubSnapshotAdapter, createGitHubStateStore, createHackerNewsAdapter, createOpenRouterAdapter, createSourceReader, createSqliteStateStore, createTelegramSender, GitHubStateError, readConfigFile, runCycle } from './index.ts';
 
 async function main(): Promise<void> {
   const { values } = parseArgs({ options: {
@@ -20,6 +20,13 @@ async function main(): Promise<void> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key?.trim()) {
     process.stderr.write('OPENROUTER_API_KEY is required.\n');
+    process.exitCode = 2;
+    return;
+  }
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const personalChatId = process.env.TELEGRAM_CHAT_ID;
+  if (!botToken?.trim() || !personalChatId?.trim()) {
+    process.stderr.write('TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required.\n');
     process.exitCode = 2;
     return;
   }
@@ -42,6 +49,8 @@ async function main(): Promise<void> {
       state,
       hn: createHackerNewsAdapter(),
       model: createOpenRouterAdapter({ apiKey: key }),
+      sources: createSourceReader(),
+      telegram: createTelegramSender({ botToken, personalChatId }),
     });
     const destination = resolve(values.digest!);
     await mkdir(dirname(destination), { recursive: true });
