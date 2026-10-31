@@ -195,7 +195,10 @@ export interface MonitoringState {
     manuallyPaused: boolean;
     telegramOffset?: number;
     lastHandledUpdateId?: number;
+    /** Explicit resume grants one new generation of delivery recovery attempts. */
+    deliveryRetryGeneration?: number;
     fault?: MonitoringFault;
+    budgetNotice?: { fingerprint: string | null; sequence: number };
   };
 }
 

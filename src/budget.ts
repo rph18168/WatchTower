@@ -75,6 +75,10 @@ export function createModelBudget(options: { state: MonitoringState; store: Stat
   }
 
   return {
+    /** Free allowance refresh for operational reporting; never reserves a call. */
+    async refreshAllowance(): Promise<void> {
+      await admit(0, limits.maxOutputTokens);
+    },
     status: (): ModelBudgetStatus => {
       const status = modelBudgetStatus(state, config, options.clock().toISOString(), { runSpentUsd, steps });
       ledger.pauseReason = status.pauseReason === 'unknown-cost' ? 'unknown-cost'
