@@ -5,5 +5,12 @@
       "description": "有助于个人开发者理解和使用人工智能的新进展，包括工具、研究成果及其实际影响。这只是可替换的关注主题示例。"
     }
   ],
-  "model": "openai/gpt-4.1-mini"
+  "model": "openai/gpt-4.1-mini",
+  "usage": {
+    "monthlyBudgetUsd": 10,
+    "runBudgetUsd": 0.25,
+    "maxSteps": 6,
+    "maxInputBytes": 64000,
+    "maxOutputTokens": 4096
+  }
 }
