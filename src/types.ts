@@ -138,6 +138,18 @@ export interface TelegramSendAdapter {
   send(request: { text: string }): Promise<TelegramSendResult>;
 }
 
+export type TelegramCommand = 'digest' | 'status' | 'pause' | 'resume';
+
+/** Identity and raw message content have already been checked inside the adapter. */
+export interface TelegramControlUpdate {
+  updateId: number;
+  command: TelegramCommand | null;
+}
+
+export interface TelegramControlAdapter extends TelegramSendAdapter {
+  getUpdates(request: { offset: number }): Promise<TelegramControlUpdate[]>;
+}
+
 /** Shared durable outbox fields; recipient identity never enters the queue. */
 export interface NotificationDelivery {
   id: string;
@@ -174,6 +186,8 @@ export interface CommandReplyNotification extends NotificationDelivery {
 export interface BudgetStatusNotification extends NotificationDelivery {
   kind: 'budget-status';
   origin: 'proactive';
+  /** Obsolete reports retain attempted-delivery history without further sends. */
+  withdrawnAt?: string;
 }
 
 export interface OvernightSummaryNotification extends NotificationDelivery {
@@ -194,6 +208,11 @@ export interface DigestEntry {
   topicIds: string[];
   sources: { kind: 'original' | 'hn'; url: string }[];
   createdAt: string;
+}
+
+export interface MonitoringFault {
+  code: 'telegram-updates' | 'candidate-discovery' | 'model-processing' | 'source-reading';
+  at: string;
 }
 
 export interface DevelopmentRecord {
@@ -225,7 +244,15 @@ export interface MonitoringState {
   developments?: DevelopmentRecord[];
   lastRunAt: string | null;
   budget?: ModelBudgetState;
-  control?: { manuallyPaused: boolean };
+  control?: {
+    manuallyPaused: boolean;
+    telegramOffset?: number;
+    lastHandledUpdateId?: number;
+    /** Explicit resume grants one new generation of delivery recovery attempts. */
+    deliveryRetryGeneration?: number;
+    fault?: MonitoringFault;
+    budgetNotice?: { fingerprint: string | null; sequence: number };
+  };
 }
 
 /** save resolves only after the state is durable. Failed saves reject. */
@@ -281,12 +308,14 @@ export interface DigestModelAdapter {
 }
 
 export interface RunCycleOptions {
+  /** Process and deliver authorized control replies without autonomous work. */
+  commandsOnly?: boolean;
   loadConfig(): Promise<WatchTowerConfig>;
   state: StateStore;
   hn: HackerNewsAdapter;
   model: DigestModelAdapter;
   sources?: SourceReaderAdapter;
-  telegram?: TelegramSendAdapter;
+  telegram?: TelegramSendAdapter & Partial<Pick<TelegramControlAdapter, 'getUpdates'>>;
   clock?: () => Date;
 }
 
@@ -295,6 +324,8 @@ export interface CycleResult {
   markdown: string;
   notifications: PendingNotification[];
   status: {
+    manuallyPaused: boolean;
+    fault: MonitoringFault | null;
     candidateCount: number;
     processedCandidateCount: number;
     pendingCandidateCount: number;

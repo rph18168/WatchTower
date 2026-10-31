@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { createGitHubSnapshotAdapter, createGitHubStateStore, createHackerNewsAdapter, createOpenRouterAdapter, createSourceReader, createSqliteStateStore, createTelegramSender, GitHubStateError, readConfigFile, runCycle } from './index.ts';
+import { createGitHubSnapshotAdapter, createGitHubStateStore, createHackerNewsAdapter, createOpenRouterAdapter, createSourceReader, createSqliteStateStore, createTelegramAdapter, GitHubStateError, readConfigFile, runCycle } from './index.ts';
 
 async function main(): Promise<void> {
   const { values } = parseArgs({ options: {
@@ -9,24 +9,26 @@ async function main(): Promise<void> {
     state: { type: 'string', default: '.watchtower/state.sqlite' },
     digest: { type: 'string', default: '.watchtower/digest.md' },
     'allow-paid-model': { type: 'boolean', default: false },
+    'commands-only': { type: 'boolean', default: false },
     'github-state': { type: 'boolean', default: false },
     'state-branch': { type: 'string', default: 'watchtower-state' },
   } });
-  if (!values['allow-paid-model']) {
-    process.stderr.write('Live model execution requires --allow-paid-model. Complete usage controls and final acceptance before unattended operation.\n');
+  if (!values['allow-paid-model'] && !values['commands-only']) {
+    process.stderr.write('Live model execution requires --allow-paid-model; use --commands-only for Telegram controls without paid model work. Complete final acceptance before unattended operation.\n');
     process.exitCode = 2;
     return;
   }
   const key = process.env.OPENROUTER_API_KEY;
-  if (!key?.trim()) {
+  if (!values['commands-only'] && !key?.trim()) {
     process.stderr.write('OPENROUTER_API_KEY is required.\n');
     process.exitCode = 2;
     return;
   }
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   const personalChatId = process.env.TELEGRAM_CHAT_ID;
-  if (!botToken?.trim() || !personalChatId?.trim()) {
-    process.stderr.write('TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required.\n');
+  const personalUserId = process.env.TELEGRAM_USER_ID;
+  if (!botToken?.trim() || !personalChatId?.trim() || !personalUserId?.trim()) {
+    process.stderr.write('TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID and TELEGRAM_USER_ID are required.\n');
     process.exitCode = 2;
     return;
   }
@@ -45,12 +47,13 @@ async function main(): Promise<void> {
     : createSqliteStateStore(resolve(values.state!));
   try {
     const result = await runCycle({
+      commandsOnly: values['commands-only'],
       loadConfig: () => readConfigFile(resolve(values.config!)),
       state,
       hn: createHackerNewsAdapter(),
-      model: createOpenRouterAdapter({ apiKey: key }),
-      sources: createSourceReader(),
-      telegram: createTelegramSender({ botToken, personalChatId }),
+      model: values['commands-only'] ? { analyze: async () => { throw new Error('Paid model work is disabled'); } } : createOpenRouterAdapter({ apiKey: key! }),
+      sources: values['commands-only'] ? undefined : createSourceReader(),
+      telegram: createTelegramAdapter({ botToken, personalChatId, personalUserId }),
     });
     const destination = resolve(values.digest!);
     await mkdir(dirname(destination), { recursive: true });
