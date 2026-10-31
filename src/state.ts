@@ -18,7 +18,7 @@ export function createSqliteStateStore(path: string): StateStore & { close(): vo
     async load() {
       const runtime = database.prepare('SELECT payload FROM runtime_state WHERE id = 1').get();
       if (!runtime) {
-        return { schemaVersion: 1, candidates: [], digest: [], lastRunAt: null };
+        return { schemaVersion: 1, candidates: [], digest: [], notifications: [], lastRunAt: null };
       }
       const metadata = JSON.parse(String(runtime.payload));
       if (metadata.schemaVersion !== 1) {
@@ -26,6 +26,7 @@ export function createSqliteStateStore(path: string): StateStore & { close(): vo
       }
       return {
         ...metadata,
+        notifications: metadata.notifications ?? [],
         candidates: database.prepare('SELECT payload FROM candidates ORDER BY rowid').all().map((row) => JSON.parse(String(row.payload))),
         digest: database.prepare('SELECT payload FROM digest_entries ORDER BY rowid').all().map((row) => JSON.parse(String(row.payload))),
       };
