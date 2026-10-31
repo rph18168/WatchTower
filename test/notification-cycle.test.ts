@@ -307,7 +307,7 @@ test('单个核实来源超过输入预算时保持待核实，并继续处理�
       sources: { read: async ({ candidateId }) => candidateId === '401' ? { ...source, text: '公开数据。'.repeat(2400) } : secondSource },
       telegram: { send: async () => ({ status: 'sent', messageId: '64' }) }, clock: () => now,
     });
-    assert.deepEqual(result.notifications.map(({ candidateId }) => candidateId), ['404']);
+    assert.deepEqual(result.notifications.map((notification) => 'candidateId' in notification ? notification.candidateId : undefined), ['404']);
     const persisted = await state.load();
     assert.equal(persisted.candidates[0]?.notificationReview?.status, 'pending');
     assert.equal(persisted.candidates[1]?.notificationReview?.status, 'complete');
