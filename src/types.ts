@@ -135,6 +135,8 @@ export interface DevelopmentNotification extends NotificationDelivery {
   whyItMatters: string;
   claims: DevelopmentVerification['claims'];
   sources: { kind: 'original' | 'hn'; url: string }[];
+  /** Persisted batches own delivery once this development joins a summary. */
+  summaryIds?: string[];
 }
 
 export interface CommandReplyNotification extends NotificationDelivery {
@@ -147,7 +149,13 @@ export interface BudgetStatusNotification extends NotificationDelivery {
   origin: 'proactive';
 }
 
-export type PendingNotification = DevelopmentNotification | CommandReplyNotification | BudgetStatusNotification;
+export interface OvernightSummaryNotification extends NotificationDelivery {
+  kind: 'overnight-summary';
+  origin: 'proactive';
+  notificationIds: string[];
+}
+
+export type PendingNotification = DevelopmentNotification | CommandReplyNotification | BudgetStatusNotification | OvernightSummaryNotification;
 
 export interface DigestEntry {
   id: string;
@@ -166,6 +174,7 @@ export interface MonitoringState {
   notifications: PendingNotification[];
   lastRunAt: string | null;
   budget?: ModelBudgetState;
+  control?: { manuallyPaused: boolean };
 }
 
 /** save resolves only after the state is durable. Failed saves reject. */
