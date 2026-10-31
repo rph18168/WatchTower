@@ -127,7 +127,7 @@ test('过期 runner 不能覆盖较新提交，冲突后的完整周期重新载
       ...common, state: stale, hn: { discover: async () => [] },
       model: { analyze: async () => { throw new Error('已提交候选不应再次处理'); } },
     });
-    assert.deepEqual(next.digest.map(({ candidateId }) => candidateId), ['301', '302']);
+    assert.deepEqual(next.digest.flatMap(({ candidateId, candidateIds }) => candidateIds ?? [candidateId]), ['301', '302']);
     assert.equal(next.status.processedCandidateCount, 2);
   } finally {
     release.resolve(); initial.close(); stale.close(); current.close();

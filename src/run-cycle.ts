@@ -1,6 +1,7 @@
 import type { CandidateDecision, CycleResult, DevelopmentVerification, DigestEntry, ModelBudgetStatus, MonitoringState, RunCycleOptions, SourceEvidence, TelegramSendResult, WatchTowerConfig } from './types.ts';
 import { createModelBudget } from './budget.ts';
 import { modelUsageLimits } from './config.ts';
+import { recordCandidateDevelopment, restoreDevelopmentHistory } from './developments.ts';
 import { confirmSummaryMembers, deliveryAllowed, ownsDelivery, prepareOvernightSummaries, retryDue } from './delivery.ts';
 
 export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
@@ -9,16 +10,27 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
   const now = (options.clock ?? (() => new Date()))().toISOString();
   const state = await options.state.load();
   state.notifications ??= [];
+  restoreDevelopmentHistory(state);
   const discovered = await options.hn.discover({
     since: new Date(Date.parse(now) - 48 * 60 * 60 * 1000).toISOString(),
     until: now,
     minScore: 20,
   });
-  const knownIds = new Set(state.candidates.map(({ story }) => story.id));
+  const knownCandidates = new Map(state.candidates.map((candidate) => [candidate.story.id, candidate]));
   for (const story of discovered) {
-    if (!knownIds.has(story.id)) {
-      state.candidates.push({ story, discoveredAt: now, status: 'pending', processedAt: null, topicIds: [] });
-      knownIds.add(story.id);
+    const candidate = knownCandidates.get(story.id);
+    if (!candidate) {
+      const added = { story, discoveredAt: now, status: 'pending' as const, processedAt: null, topicIds: [] };
+      state.candidates.push(added);
+      knownCandidates.set(story.id, added);
+    } else {
+      if (candidate.story.title !== story.title || candidate.story.url !== story.url || candidate.story.text !== story.text) {
+        candidate.status = 'pending';
+        candidate.processedAt = null;
+        delete candidate.notificationReview;
+        delete candidate.developmentReview;
+      }
+      candidate.story = story;
     }
   }
   // A model/network failure must not discard candidates already collected.
@@ -35,11 +47,13 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
         candidate.status = 'processed';
         candidate.processedAt = now;
         candidate.topicIds = decision.topicIds;
+        candidate.digestSummary = decision.summary ?? undefined;
+        if (decision.topicIds.length > 0) candidate.developmentReview = { status: 'pending', comparedRevisionIds: [] };
         if (decision.topicIds.length > 0 && decision.significance) {
           candidate.notificationReview = { proposal: decision.significance, status: 'pending' };
         }
         if (decision.topicIds.length > 0) {
-          state.digest.push({
+          const entry = {
             id: `digest:${candidate.story.id}`,
             candidateId: candidate.story.id,
             title: candidate.story.title,
@@ -47,10 +61,13 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
             topicIds: decision.topicIds,
             sources: [
               ...(candidate.story.url ? [{ kind: 'original' as const, url: candidate.story.url }] : []),
-              { kind: 'hn', url: candidate.story.hnUrl },
+              { kind: 'hn' as const, url: candidate.story.hnUrl },
             ],
             createdAt: now,
-          });
+          };
+          const existing = state.digest.findIndex(({ id }) => id === entry.id);
+          if (existing === -1) state.digest.push(entry);
+          else if (!state.digest[existing]!.developmentId) state.digest[existing] = entry;
         }
       }
     }
@@ -64,7 +81,7 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
         addUncertainty(state, candidate.story.id, '未提供可核实的链接来源。');
         continue;
       }
-      const source = await options.sources.read({ candidateId: candidate.story.id, url: candidate.story.url });
+      const source = review.verification && review.source ? review.source : await options.sources.read({ candidateId: candidate.story.id, url: candidate.story.url });
       review.source = source;
       if (source.status !== 'read' || source.truncated || !source.text.trim() || source.id !== `source:${candidate.story.id}` || source.candidateId !== candidate.story.id || source.originalUrl !== candidate.story.url) {
         review.status = 'complete';
@@ -75,20 +92,24 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
       // large HN story body in this second, separately admitted model request.
       const { id, title, url, hnUrl, score, publishedAt } = candidate.story;
       const input = { model: config.model, topics: config.topics, candidate: { id, title, url, hnUrl, score, publishedAt }, proposal: review.proposal, source };
-      const result = await budget.execute(input, (execution) => options.model.verifyDevelopment!({ ...input, execution }));
+      const result = review.verification ? { verification: review.verification } : await budget.execute(input, (execution) => options.model.verifyDevelopment!({ ...input, execution }));
       if (!result) continue;
-      review.status = 'complete';
+      review.verification = result.verification;
       if (!supportedVerification(result.verification, source)) {
+        review.status = 'complete';
         addUncertainty(state, candidate.story.id, '关键事实证据不足，暂不主动通知。');
         continue;
       }
-      const { change, whyItMatters, claims } = result.verification;
-      const sources = [{ kind: 'original' as const, url: source.finalUrl ?? source.originalUrl }, { kind: 'hn' as const, url: candidate.story.hnUrl }];
-      state.notifications.push({
-        id: `notification:${candidate.story.id}`, candidateId: candidate.story.id, topicIds: candidate.topicIds,
-        text: `${change}\n\n意义：${whyItMatters}\n\n来源：${sources[0]!.url}\nHN 讨论：${candidate.story.hnUrl}`,
-        change, whyItMatters, claims, sources, createdAt: now, status: 'pending', sentAt: null, attempts: [],
-      });
+    }
+  }
+  for (const candidate of state.candidates.filter(({ status, developmentReview }) => status === 'processed' && developmentReview?.status === 'pending')) {
+    const review = candidate.notificationReview;
+    const evidence = review?.source && review.verification && supportedVerification(review.verification, review.source)
+      ? { verification: review.verification, source: review.source } : undefined;
+    if (review?.status === 'pending' && !evidence) continue;
+    if (await recordCandidateDevelopment(state, candidate, now, { config, model: options.model, budget, store: options.state }, evidence)) {
+      candidate.developmentReview!.status = 'complete';
+      if (review) review.status = 'complete';
     }
   }
   const budgetStatus = budget.status();
@@ -124,8 +145,10 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
 }
 
 function addUncertainty(state: MonitoringState, candidateId: string, note: string): void {
+  const candidate = state.candidates.find(({ story }) => story.id === candidateId);
+  if (candidate?.digestSummary) candidate.digestSummary += `（${note}）`;
   const entry = state.digest.find((entry) => entry.candidateId === candidateId);
-  if (entry) entry.summary += `（${note}）`;
+  if (entry && !entry.developmentId) entry.summary += `（${note}）`;
 }
 
 function supportedVerification(verification: DevelopmentVerification, source: SourceEvidence): boolean {
