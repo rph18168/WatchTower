@@ -3,7 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createSqliteStateStore, runCycle } from '../src/index.ts';
+import { runCycle } from '../src/index.ts';
+import { createEstablishedStateStore as createSqliteStateStore } from './support/state.ts';
 import type { CandidateStory, DevelopmentNotification, DigestModelAdapter, SourceReaderAdapter } from '../src/index.ts';
 
 const config = { model: 'test/model', topics: [{ id: 'astronomy', description: '公共天文研究资料的新进展' }] };
@@ -45,7 +46,7 @@ test('上海 08:00 含、23:00 不含；静默时段仍采集并保存摘要和�
   ]) {
     await t.test(at, async () => {
       const directory = await mkdtemp(join(tmpdir(), 'watchtower-window-'));
-      const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+      const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
       const sent: string[] = [];
       try {
         const result = await runCycle({
@@ -68,7 +69,7 @@ test('上海 08:00 含、23:00 不含；静默时段仍采集并保存摘要和�
 test('夜间动态跨 SQLite 重启保留，08:00 汇总送达并保留每项意义、原文及 HN 入口', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-overnight-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   const sent: string[] = [];
   const deliveryCheckpoints: boolean[] = [];
   try {
@@ -84,7 +85,7 @@ test('夜间动态跨 SQLite 重启保留，08:00 汇总送达并保留每项意
       assert.equal(result.notifications.every(({ status }) => status === 'pending'), true);
       assert.equal(sent.length, 0);
       state.close();
-      state = createSqliteStateStore(path);
+      state = await createSqliteStateStore(path);
     }
     const morning = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [] },
@@ -108,7 +109,7 @@ test('夜间动态跨 SQLite 重启保留，08:00 汇总送达并保留每项意
     assert.equal(morning.digest.length, 2);
     assert.equal(morning.notifications.every(({ status }) => status === 'sent'), true);
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     let repeated = 0;
     await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [] }, model,
@@ -125,7 +126,7 @@ test('夜间动态跨 SQLite 重启保留，08:00 汇总送达并保留每项意
 test('超长夜间汇总拆成 Telegram 可接收的稳定批次，每批只确认自己的动态，未知结果重启后重试同一批', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-summary-batches-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   const stories = ['510', '511', '512', '513', '514', '515'].map(story);
   const longProposal = (id: string) => ({
     change: `天文台公开第${id}批资料。${'新增观测覆盖遥远星系。'.repeat(35)}`,
@@ -147,7 +148,7 @@ test('超长夜间汇总拆成 Telegram 可接收的稳定批次，每批只确�
       clock: () => new Date('2026-11-01T15:00:00.000Z'),
     });
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const morning = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [] }, model,
       telegram: { send: async ({ text }) => {
@@ -164,7 +165,7 @@ test('超长夜间汇总拆成 Telegram 可接收的稳定批次，每批只确�
       assert.ok(sent.some((text) => text.includes(notification.change) && text.includes(notification.whyItMatters) && text.includes(story(notification.candidateId).url!) && text.includes(story(notification.candidateId).hnUrl)));
     }
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const repeated: string[] = [];
     const recovered = await runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [] }, model,
@@ -181,7 +182,7 @@ test('超长夜间汇总拆成 Telegram 可接收的稳定批次，每批只确�
 
 test('每次实际发送都重新检查时段，周期跨过 23:00 后停止后续发送并记录真实尝试时间', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-window-closes-'));
-  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
   let at = new Date('2026-11-01T14:59:00.000Z');
   const sent: string[] = [];
   try {
@@ -217,7 +218,7 @@ test('旧快照中的新闻重试和预算报告共用静默及手动暂停准�
   ]) {
     await t.test(`${at} paused=${manuallyPaused}`, async () => {
       const directory = await mkdtemp(join(tmpdir(), 'watchtower-admission-'));
-      const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+      const state = await createSqliteStateStore(join(directory, 'state.sqlite'));
       const sent: string[] = [];
       const createdAt = '2026-11-01T14:45:00.000Z';
       const legacyNews: DevelopmentNotification = {
@@ -259,7 +260,7 @@ test('旧快照中的新闻重试和预算报告共用静默及手动暂停准�
 test('晨间汇总的持久化失败时不开始发送，重开 SQLite 后重新形成汇总送达', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-summary-checkpoint-'));
   const path = join(directory, 'state.sqlite');
-  let state = createSqliteStateStore(path);
+  let state = await createSqliteStateStore(path);
   const sent: string[] = [];
   try {
     await runCycle({ loadConfig: async () => config, state, hn: { discover: async () => [story('540')] }, model, sources, clock: () => new Date('2026-11-01T15:00:00.000Z') });
@@ -277,7 +278,7 @@ test('晨间汇总的持久化失败时不开始发送，重开 SQLite 后重新
     } }), /Summary checkpoint unavailable/);
     assert.equal(sent.length, 0);
     state.close();
-    state = createSqliteStateStore(path);
+    state = await createSqliteStateStore(path);
     const recovered = await runCycle({ ...morning, state });
     assert.equal(sent.length, 1);
     assert.match(sent[0]!, /夜间动态汇总/);

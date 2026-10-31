@@ -1,5 +1,6 @@
 import type { createModelBudget } from './budget.ts';
 import type { DevelopmentComparison, DevelopmentNotification, DevelopmentRecord, DevelopmentResolution, DevelopmentVerification, DigestEntry, DigestModelAdapter, MonitoringState, PendingNotification, SourceEvidence, StateStore, StoredCandidate, WatchTowerConfig } from './types.ts';
+import { candidateContentAt } from './recovery.ts';
 
 /** Old SQLite payloads retain delivery receipts while gaining separate identity. */
 export function restoreDevelopmentHistory(state: MonitoringState): void {
@@ -168,7 +169,7 @@ export async function recordCandidateDevelopment(state: MonitoringState, candida
   revision.notificationId = id;
   const notification: DevelopmentNotification = {
     kind: 'development', origin: 'proactive',
-    id, candidateId: candidate.story.id, candidateIds: [candidate.story.id], developmentId: development.id, revisionId,
+    id, candidateId: candidate.story.id, candidateIds: [candidate.story.id], developmentId: development.id, revisionId, developmentAt: candidateContentAt(candidate),
     topicIds: development.topicIds, text: '', change: verification.change, whyItMatters: verification.whyItMatters,
     claims: verification.claims, sources, createdAt: now, status: 'pending', sentAt: null, attempts: [],
   };

@@ -3,7 +3,8 @@ import { BudgetAdmissionError, createModelBudget } from './budget.ts';
 import { modelUsageLimits } from './config.ts';
 import { updateBudgetNotice } from './budget-notices.ts';
 import { recordCandidateDevelopment, restoreDevelopmentHistory } from './developments.ts';
-import { confirmSummaryMembers, deliveryAllowed, ownsDelivery, prepareOvernightSummaries, retryDue } from './delivery.ts';
+import { confirmSummaryMembers, deliveryAllowed, deliveryAttempts, ownsDelivery, prepareOvernightSummaries, retryDue } from './delivery.ts';
+import { archiveExpiredCandidates, beginInitialBaseline, candidateBatch, completeInitialBaseline, expireStaleNotifications } from './recovery.ts';
 
 export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> {
   let persistenceFailed = false;
@@ -30,7 +31,7 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
         if (update.command === 'pause' || update.command === 'resume') {
           control.manuallyPaused = update.command === 'pause';
           if (update.command === 'resume') control.deliveryRetryGeneration = (control.deliveryRetryGeneration ?? 0) + 1;
-          const deliveryFault = state.notifications.some((notification) => notification.status === 'pending' && ownsDelivery(notification) && notification.attempts.some((attempt) => 'permanent' in attempt && attempt.permanent));
+          const deliveryFault = state.notifications.some((notification) => notification.status === 'pending' && ownsDelivery(notification) && deliveryAttempts(notification, state).some((attempt) => 'permanent' in attempt && attempt.permanent));
           state.notifications.push({
             kind: 'command-reply', origin: 'command-reply', id: `command:${update.updateId}`,
             text: update.command === 'pause'
@@ -63,6 +64,10 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
   let automaticFailure: unknown;
   let phase: MonitoringFault['code'] = 'candidate-discovery';
   try {
+    if (autonomousEnabled) {
+      beginInitialBaseline(state, now);
+      await options.state.save(state);
+    }
     const discovered = !autonomousEnabled ? [] : await externalOperation(options, state, now, 'candidate-discovery', () => options.hn.discover({
       since: new Date(Date.parse(now) - 48 * 60 * 60 * 1000).toISOString(),
       until: now,
@@ -72,22 +77,28 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
     for (const story of discovered) {
       const candidate = knownCandidates.get(story.id);
       if (!candidate) {
-        const added = { story, discoveredAt: now, status: 'pending' as const, processedAt: null, topicIds: [] };
+        const added = { story, discoveredAt: now, status: 'pending' as const, processedAt: null, topicIds: [], initialBaseline: Date.parse(story.publishedAt) <= Date.parse(state.initialBaseline!.until) };
         state.candidates.push(added);
         knownCandidates.set(story.id, added);
       } else {
         if (candidate.story.title !== story.title || candidate.story.url !== story.url || candidate.story.text !== story.text) {
+          candidate.initialBaseline = candidate.initialBaseline === true && candidate.developmentReview?.status !== 'complete';
           candidate.status = 'pending';
           candidate.processedAt = null;
           delete candidate.notificationReview;
           delete candidate.developmentReview;
+          if (!candidate.initialBaseline) candidate.contentUpdatedAt = now;
+          delete candidate.archivedAt;
         }
         candidate.story = story;
       }
     }
+    archiveExpiredCandidates(state, now);
     // A model/network failure must not discard candidates already collected.
     await options.state.save(state);
-    const pending = !autonomousEnabled ? [] : state.candidates.filter(({ status }) => status === 'pending');
+    const allPending = !autonomousEnabled ? [] : state.candidates.filter(({ status }) => status === 'pending');
+    const pending = candidateBatch(allPending, config, options.model);
+    if (allPending.length && !pending.length) state.budget!.pauseReason = 'input-size';
     phase = 'model-processing';
     if (pending.length > 0) {
       const input = { model: config.model, topics: config.topics, candidates: pending.map(({ story }) => story) };
@@ -125,22 +136,41 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
       }
     }
     if (autonomousEnabled && options.sources && options.model.verifyDevelopment) {
-      for (const candidate of state.candidates.filter(({ notificationReview }) => notificationReview?.status === 'pending')) {
+      for (const candidate of state.candidates.filter(({ notificationReview, archivedAt }) => !archivedAt && notificationReview?.status === 'pending')) {
         if (['monthly-budget', 'run-budget', 'steps', 'unknown-cost'].includes(budget.status().pauseReason ?? '')) break;
         const review = candidate.notificationReview!;
+        const reviewAt = (options.clock ?? (() => new Date()))();
+        if (review.nextSourceAttemptAt && Date.parse(review.nextSourceAttemptAt) > reviewAt.getTime()) continue;
         if (!candidate.story.url) {
           review.status = 'complete';
           addUncertainty(state, candidate.story.id, '未提供可核实的链接来源。');
           continue;
         }
         phase = 'source-reading';
-        const source = review.verification && review.source ? review.source : await externalOperation(options, state, now, 'source-reading', () => options.sources!.read({ candidateId: candidate.story.id, url: candidate.story.url! }));
+        let source = review.source?.status === 'read' ? review.source : undefined;
+        if (!source) {
+          try { source = await options.sources.read({ candidateId: candidate.story.id, url: candidate.story.url }); }
+          catch { source = { id: `source:${candidate.story.id}`, candidateId: candidate.story.id, originalUrl: candidate.story.url, status: 'unavailable', title: '', text: '', truncated: false, failureCode: 'network' }; }
+        }
         review.source = source;
         if (source.status !== 'read' || source.truncated || !source.text.trim() || source.id !== `source:${candidate.story.id}` || source.candidateId !== candidate.story.id || source.originalUrl !== candidate.story.url) {
+          if (source.status === 'unavailable' && ['network', 'timeout'].includes(source.failureCode ?? '')) {
+            (state.control ??= { manuallyPaused: false }).fault = { code: 'source-reading', at: reviewAt.toISOString() };
+            review.sourceFailures = (review.sourceFailures ?? 0) + 1;
+            if (review.sourceFailures < 3) {
+              review.nextSourceAttemptAt = new Date(reviewAt.getTime() + 15 * 60_000 * 2 ** (review.sourceFailures - 1)).toISOString();
+              addUncertainty(state, candidate.story.id, '来源暂时不可用，稍后重试核实。');
+              continue;
+            }
+          }
+          clearUncertainty(state, candidate.story.id, '来源暂时不可用，稍后重试核实。');
           review.status = 'complete';
           addUncertainty(state, candidate.story.id, '来源正文未能完整核实，暂不主动通知。');
           continue;
         }
+        delete review.nextSourceAttemptAt;
+        if (state.control?.fault?.code === 'source-reading') delete state.control.fault;
+        clearUncertainty(state, candidate.story.id, '来源暂时不可用，稍后重试核实。');
         // The linked page is the verification evidence. Do not repeat a possibly
         // large HN story body in this second, separately admitted model request.
         const { id, title, url, hnUrl, score, publishedAt } = candidate.story;
@@ -158,12 +188,12 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
     }
     if (autonomousEnabled) {
       phase = 'model-processing';
-      for (const candidate of state.candidates.filter(({ status, developmentReview }) => status === 'processed' && developmentReview?.status === 'pending')) {
+      for (const candidate of state.candidates.filter(({ status, developmentReview, archivedAt }) => !archivedAt && status === 'processed' && developmentReview?.status === 'pending')) {
         const review = candidate.notificationReview;
         const evidence = review?.source && review.verification && supportedVerification(review.verification, review.source)
           ? { verification: review.verification, source: review.source } : undefined;
         if (review?.status === 'pending' && !evidence) continue;
-        if (await recordCandidateDevelopment(state, candidate, now, { config, model: options.model, budget, store: options.state }, evidence)) {
+        if (await recordCandidateDevelopment(state, candidate, now, { config, model: options.model, budget, store: options.state, allowNotification: !candidate.initialBaseline }, evidence)) {
           candidate.developmentReview!.status = 'complete';
           if (review) review.status = 'complete';
         }
@@ -180,14 +210,17 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
     await budget.refreshAllowance();
   }
   const budgetStatus = budget.status();
+  if (autonomousEnabled && !automaticFailed) completeInitialBaseline(state, now);
   if (options.telegram?.getUpdates) updateBudgetNotice(state, config, budgetStatus, now);
+  expireStaleNotifications(state, (options.clock ?? (() => new Date()))());
   if (!options.commandsOnly) prepareOvernightSummaries(state, (options.clock ?? (() => new Date()))());
   if (!automaticFailed) state.lastRunAt = now;
   await options.state.save(state);
   if (options.telegram) {
     for (const notification of state.notifications.filter(({ status }) => status === 'pending')) {
       if (options.commandsOnly && notification.kind !== 'command-reply') continue;
-      const startedAt = (options.clock ?? (() => new Date()))();
+      const startedAt = await refreshDeliveryFreshness(options, state);
+      if (notification.status !== 'pending') continue;
       if (!ownsDelivery(notification) || !deliveryAllowed(notification, state, startedAt) || !retryDue(notification, state, startedAt)) continue;
       const attemptIndex = notification.attempts.length;
       const progress = { at: startedAt.toISOString(), ...(state.control?.deliveryRetryGeneration ? { retryGeneration: state.control.deliveryRetryGeneration } : {}) };
@@ -195,7 +228,8 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
       // This save includes the attempt as well as the queued text. A runner may
       // exit on either side of Telegram; recovery must see an unconfirmed start.
       await options.state.save(state);
-      const attemptedAt = (options.clock ?? (() => new Date()))();
+      const attemptedAt = await refreshDeliveryFreshness(options, state);
+      if (notification.status !== 'pending') continue;
       if (!deliveryAllowed(notification, state, attemptedAt)) continue;
       let result: TelegramSendResult;
       try { result = await options.telegram.send({ text: notification.text }); }
@@ -214,6 +248,15 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
   return cycleResult(state, budget.usage(), now, budgetStatus);
 }
 
+async function refreshDeliveryFreshness(options: RunCycleOptions, state: MonitoringState): Promise<Date> {
+  let at = (options.clock ?? (() => new Date()))();
+  while (expireStaleNotifications(state, at)) {
+    await options.state.save(state);
+    at = (options.clock ?? (() => new Date()))();
+  }
+  return at;
+}
+
 async function externalOperation<T>(options: RunCycleOptions, state: MonitoringState, now: string, code: MonitoringFault['code'], operation: () => Promise<T>): Promise<T> {
   try {
     const result = await operation();
@@ -229,9 +272,16 @@ async function externalOperation<T>(options: RunCycleOptions, state: MonitoringS
 
 function addUncertainty(state: MonitoringState, candidateId: string, note: string): void {
   const candidate = state.candidates.find(({ story }) => story.id === candidateId);
-  if (candidate?.digestSummary) candidate.digestSummary += `（${note}）`;
+  if (candidate?.digestSummary && !candidate.digestSummary.includes(note)) candidate.digestSummary += `（${note}）`;
   const entry = state.digest.find((entry) => entry.candidateId === candidateId);
-  if (entry && !entry.developmentId) entry.summary += `（${note}）`;
+  if (entry && !entry.developmentId && !entry.summary.includes(note)) entry.summary += `（${note}）`;
+}
+
+function clearUncertainty(state: MonitoringState, candidateId: string, note: string): void {
+  const candidate = state.candidates.find(({ story }) => story.id === candidateId);
+  if (candidate?.digestSummary) candidate.digestSummary = candidate.digestSummary.replace(`（${note}）`, '');
+  const entry = state.digest.find((entry) => entry.candidateId === candidateId && !entry.developmentId);
+  if (entry) entry.summary = entry.summary.replace(`（${note}）`, '');
 }
 
 function supportedVerification(verification: DevelopmentVerification, source: SourceEvidence): boolean {
@@ -283,7 +333,7 @@ function cycleResult(state: MonitoringState, usage: CycleResult['usage'], now: s
       fault: state.control?.fault ?? null,
       candidateCount: state.candidates.length,
       processedCandidateCount: processed,
-      pendingCandidateCount: state.candidates.length - processed,
+      pendingCandidateCount: state.candidates.filter(({ status }) => status === 'pending').length,
       lastRunAt: now,
       budget,
     },
@@ -308,7 +358,7 @@ function renderStatus(state: MonitoringState, budget: ModelBudgetStatus, now: st
     : provider.remainingUsd === null ? '未设 key 限额，不代表账户余额无限'
     : `已知剩余 US$${provider.remainingUsd.toFixed(4)}`;
   const pendingAttempts = state.notifications.filter((notification) => notification.status === 'pending' && ownsDelivery(notification))
-    .flatMap((notification) => notification.attempts.slice(-1));
+    .flatMap((notification) => deliveryAttempts(notification, state).slice(-1));
   const permanent = pendingAttempts.filter((attempt) => 'permanent' in attempt && attempt.permanent).length;
   const uncertain = pendingAttempts.filter(({ status }) => ['unknown', 'in-flight'].includes(status)).length;
   const deliveryCodes = [...new Set(pendingAttempts.flatMap((attempt) => 'failureCode' in attempt ? [attempt.failureCode] : []))];
@@ -317,7 +367,8 @@ function renderStatus(state: MonitoringState, budget: ModelBudgetStatus, now: st
     `模型工作：${budget.pauseReason ? `预算暂停（${budget.pauseReason}）` : '请求前仍需通过用量检查'}\n` +
     `月预算（UTC ${budget.month}）：已用 US$${budget.spentUsd.toFixed(4)} / US$${budget.monthlyBudgetUsd.toFixed(4)}，剩余 US$${budget.remainingUsd.toFixed(4)}\n` +
     `服务方额度：${providerStatus}${provider ? `；本月用量 US$${provider.usageMonthlyUsd.toFixed(4)}（${provider.checkedAt} 检查）` : ''}\n` +
-    `待处理候选：${state.candidates.filter(({ status }) => status === 'pending').length}；待核实：${state.candidates.filter(({ notificationReview }) => notificationReview?.status === 'pending').length}；待归并动态：${state.candidates.filter(({ developmentReview }) => developmentReview?.status === 'pending').length}；待发送：${state.notifications.filter((notification) => notification.status === 'pending' && ownsDelivery(notification)).length}\n` +
+    `待处理候选：${state.candidates.filter(({ status }) => status === 'pending').length}；待核实：${state.candidates.filter(({ notificationReview, archivedAt }) => !archivedAt && notificationReview?.status === 'pending').length}；待归并动态：${state.candidates.filter(({ developmentReview, archivedAt }) => !archivedAt && developmentReview?.status === 'pending').length}；待发送：${state.notifications.filter((notification) => notification.status === 'pending' && ownsDelivery(notification)).length}\n` +
+    `初始基线：${state.initialBaseline?.status === 'complete' ? '已完成' : state.initialBaseline ? '构建中' : '尚未巡检'}；历史候选：${state.candidates.filter(({ status, archivedAt }) => status === 'archived' || archivedAt).length}\n` +
     `投递结果不确定：${uncertain}；不可恢复故障：${permanent}${deliveryCodes.length ? `（${deliveryCodes.join('、')}）` : ''}\n` +
     `最近成功周期：${state.lastRunAt ?? '尚无'}\n临时故障：${state.control?.fault ? `${faultLabel(state.control.fault.code)}（${state.control.fault.at}）` : '无'}`;
 }
