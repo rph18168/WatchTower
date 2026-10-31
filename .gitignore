@@ -1,0 +1,12 @@
+.scratch/
+.worktrees/
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
