@@ -84,6 +84,7 @@ function splitText(text: string, limit: number): string[] {
 
 /** Summary members remain in the outbox as evidence, never as a second send. */
 export function ownsDelivery(notification: PendingNotification): boolean {
+  if (notification.kind === 'budget-status' && notification.withdrawnAt) return false;
   return !isDevelopment(notification) || !notification.summaryIds?.length;
 }
 

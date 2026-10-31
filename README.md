@@ -26,13 +26,15 @@
 
 ## 人工执行一次完整周期
 
-在进程环境中提供 `OPENROUTER_API_KEY`，不要写入版本管理中的文件。构建后使用显式的付费操作开关：
+在进程环境中提供 `OPENROUTER_API_KEY`、`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` 和 `TELEGRAM_USER_ID`，不要写入版本管理中的文件。构建后使用显式的付费操作开关：
 
 ```powershell
 npm start -- --allow-paid-model
 ```
 
-可选参数为 `--config <路径>`、`--state <SQLite路径>` 和 `--digest <Markdown路径>`；默认输出位于被 Git 忽略的 `.watchtower/`。`--github-state` 使用 `GITHUB_TOKEN` / `GITHUB_REPOSITORY` 读取和保存同仓快照，可用 `--state-branch <分支>` 改变默认 `watchtower-state`。不提供 `--allow-paid-model` 时，命令退出且不发起网络请求。这一开关表示人工启用真实模型工作，实际请求仍受应用和 provider 额度约束。
+可选参数为 `--config <路径>`、`--state <SQLite路径>` 和 `--digest <Markdown路径>`；默认输出位于被 Git 忽略的 `.watchtower/`。`--github-state` 使用 `GITHUB_TOKEN` / `GITHUB_REPOSITORY` 读取和保存同仓快照，可用 `--state-branch <分支>` 改变默认 `watchtower-state`。`--allow-paid-model` 表示人工启用真实模型工作，实际请求仍受应用和 provider 额度约束。也可用 `--commands-only` 仅处理 Telegram 操作，无需模型 key；两个开关均不提供时退出且不发起网络请求。
+
+Telegram 提供本人私聊的 `/digest`、`/status`、`/pause` 和 `/resume`。每个周期优先读取操作，暂停后仍能回复与恢复；夜间查询不受主动通知时段限制。预算不足会排入去重的运行报告；命令处理、身份边界、游标恢复和 24 小时未读更新边界见 [Telegram 控制说明](docs/telegram-controls.md)。
 
 应用的业务入口为 `runCycle({ loadConfig, state, hn, model, clock? })`，返回保存后的 `digest`、`markdown`、候选处理数量 `status` 及本轮 `usage`。`StateStore.load()` / `save()` 都是异步契约，`save` 只有在持久化完成后才应成功返回；SQLite 适配器还提供 `close()`。远端快照适配器可在这一存储 seam 延续持久化契约，无需再暴露每个业务步骤。
 

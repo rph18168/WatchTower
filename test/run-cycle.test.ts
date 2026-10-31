@@ -95,6 +95,7 @@ test('一个完整周期按不同领域的关注主题保留相关摘要，SQLit
     assert.deepEqual(requests[0]?.topics, config.topics);
     assert.deepEqual(result.usage, { costUsd: 0.0012, inputTokens: 600, outputTokens: 120, costComplete: true });
     assert.deepEqual(result.status, {
+      manuallyPaused: false, fault: null,
       candidateCount: 3,
       processedCandidateCount: 3,
       pendingCandidateCount: 0,
