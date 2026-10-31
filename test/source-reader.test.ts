@@ -1,37 +1,28 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { gzipSync } from 'node:zlib';
 import test from 'node:test';
 import { createSourceReader } from '../src/index.ts';
 
 test('来源读取的真实连接拒绝私网字面地址、规范化地址和含私网结果的 DNS', async () => {
-  let requests = 0;
-  const server = createServer((_request, response) => { requests++; response.end('Private content'); });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   let lookups = 0;
   const reader = createSourceReader({ lookup: async () => {
     lookups++;
     return [{ address: '93.184.215.14', family: 4 }, { address: '127.0.0.1', family: 4 }];
   } });
-  try {
-    for (const url of [
+  for (const url of [
       'http://127.0.0.1/', 'http://2130706433/', 'http://0x7f000001/',
       'http://[::ffff:127.0.0.1]/', 'http://[::ffff:7f00:1]/', 'http://[::1]/',
       'http://169.254.169.254/latest/meta-data/', 'http://10.1.2.3/', 'http://100.64.0.1/',
       'http://[fc00::1]/', 'http://[fe80::1]/', 'http://[2002:7f00:1::]/',
       'http://user:password@candidate.example/', 'http://candidate.example:81/', 'ftp://candidate.example/',
       'https://candidate.example/',
-    ]) {
-      const result = await reader.read({ candidateId: '401', url });
-      assert.equal(result.status, 'unavailable', url);
-      assert.equal(result.failureCode, 'unsafe-url', url);
-      assert.equal(result.text, '');
-    }
-    assert.equal(lookups, 1, 'DNS must be checked in the actual connector lookup path');
-    assert.equal(requests, 0);
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+  ]) {
+    const result = await reader.read({ candidateId: '401', url });
+    assert.equal(result.status, 'unavailable', url);
+    assert.equal(result.failureCode, 'unsafe-url', url);
+    assert.equal(result.text, '');
   }
+  assert.equal(lookups, 1, 'DNS must be checked in the actual connector lookup path');
 });
 
 test('同一来源的新连接重新检查全部 DNS 结果，不复用先前的地址判断', async () => {
@@ -107,4 +98,31 @@ test('来源重定向后读取失败仍记录原始和最后尝试的来源链�
   assert.equal(result.originalUrl, 'https://observatory.example/archive');
   assert.equal(result.finalUrl, 'https://observatory.example/new-archive');
   assert.equal(result.failureCode, 'network');
+});
+
+test('来源总期限也覆盖重定向正文清理', { timeout: 1000 }, async () => {
+  const reader = createSourceReader({ limits: { totalMs: 30 }, fetch: async () => new Response(
+    new ReadableStream({ cancel: () => new Promise<void>(() => {}) }),
+    { status: 302, headers: { location: '/next' } },
+  ) });
+  const result = await reader.read({ candidateId: '401', url: 'https://observatory.example/archive' });
+  assert.equal(result.failureCode, 'timeout');
+});
+
+test('来源真实连接的总期限覆盖未返回的 DNS 查询', { timeout: 1000 }, async () => {
+  let lookups = 0;
+  const reader = createSourceReader({ limits: { totalMs: 30 }, lookup: async () => { lookups++; return new Promise(() => {}); } });
+  const result = await reader.read({ candidateId: '401', url: 'https://candidate.example/archive' });
+  assert.equal(result.failureCode, 'timeout');
+  assert.equal(lookups, 1);
+});
+
+test('来源链接在 URL 规范化后仍受大小限制，保留简洁通知的可追溯链接空间', async () => {
+  let requests = 0;
+  const reader = createSourceReader({ fetch: async () => { requests++; return new Response('Public source text.', { headers: { 'content-type': 'text/plain' } }); } });
+  for (const suffix of ['a'.repeat(2500), '天'.repeat(600)]) {
+    const result = await reader.read({ candidateId: '401', url: `https://observatory.example/${suffix}` });
+    assert.equal(result.failureCode, 'unsafe-url');
+  }
+  assert.equal(requests, 0);
 });

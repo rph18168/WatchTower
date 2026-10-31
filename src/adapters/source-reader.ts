@@ -6,7 +6,8 @@ import { Agent, fetch as sourceFetch } from 'undici';
 import type { SourceEvidence, SourceReaderAdapter } from '../types.ts';
 
 const MAX_BYTES = 1_048_576;
-const MAX_TEXT = 20_000;
+// Leave room for topics, metadata, instructions and schema under the 64k input default.
+const MAX_TEXT = 12_000;
 const MAX_TIME_MS = 12_000;
 const denied = new BlockList();
 for (const [address, prefix] of [
@@ -32,7 +33,7 @@ class SourceReadError extends Error {
 function checkedUrl(value: string): URL {
   let url: URL;
   try { url = new URL(value); } catch { throw new SourceReadError('unsafe-url'); }
-  if (value.length > 4096 || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port) {
+  if (value.length > 2048 || url.href.length > 2048 || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port) {
     throw new SourceReadError('unsafe-url');
   }
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
@@ -101,24 +102,24 @@ export function createSourceReader(options: {
             ? await abortable(options.fetch(current, init), controller.signal)
             : await abortable(sourceFetch(current, init), controller.signal);
           if ([301, 302, 303, 307, 308].includes(response.status)) {
-            await response.body?.cancel();
+            await cancelBody(response, controller.signal);
             const location = response.headers.get('location');
             if (!location || redirects >= 3) throw new SourceReadError('redirect');
             try { current = checkedUrl(new URL(location, current).href); }
             catch (error) { throw error instanceof SourceReadError ? error : new SourceReadError('redirect'); }
             continue;
           }
-          if (!response.ok) { await response.body?.cancel(); throw new SourceReadError('network'); }
+          if (!response.ok) { await cancelBody(response, controller.signal); throw new SourceReadError('network'); }
           const contentType = response.headers.get('content-type') ?? '';
           const mime = contentType.split(';')[0]!.trim().toLowerCase();
           const charset = contentType.match(/charset\s*=\s*["']?([^;\s"']+)/i)?.[1]?.toLowerCase();
           const encoding = response.headers.get('content-encoding')?.trim().toLowerCase();
           if (!['text/html', 'text/plain'].includes(mime) || (charset && !['utf-8', 'utf8', 'us-ascii'].includes(charset)) || (encoding && !['identity', 'gzip', 'deflate', 'br'].includes(encoding))) {
-            await response.body?.cancel();
+            await cancelBody(response, controller.signal);
             throw new SourceReadError('unsupported-content');
           }
           const declaredLength = Number(response.headers.get('content-length'));
-          if (declaredLength > maxBytes) { await response.body?.cancel(); throw new SourceReadError('too-large'); }
+          if (declaredLength > maxBytes) { await cancelBody(response, controller.signal); throw new SourceReadError('too-large'); }
           const body = await readBoundedBody(response, maxBytes, controller.signal);
           const extracted = mime === 'text/html' ? extractHtml(body, maxText) : { title: '', text: normalize(body).slice(0, maxText), truncated: normalize(body).length > maxText };
           if (!extracted.text) throw new SourceReadError('empty');
@@ -134,6 +135,10 @@ export function createSourceReader(options: {
       }
     },
   };
+}
+
+async function cancelBody(response: { body: { cancel(): Promise<void> } | null }, signal: AbortSignal): Promise<void> {
+  if (response.body) await abortable(response.body.cancel(), signal);
 }
 
 function boundedLimit(value: number | undefined, maximum: number): number {

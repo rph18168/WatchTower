@@ -16,9 +16,10 @@ const story: CandidateStory = {
   hnUrl: 'https://news.ycombinator.com/item?id=301', score: 40, publishedAt: '2026-11-01T00:00:00.000Z',
 };
 const model: DigestModelAdapter = {
+  getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }),
   analyze: async ({ candidates }) => ({
     decisions: candidates.map(({ id }) => ({ candidateId: id, topicIds: ['computing'], summary: '编译器新版降低内存需求，可供开发者评估。' })),
-    usage: { costUsd: 0.001, inputTokens: 100, outputTokens: 20 },
+    usage: { costUsd: 0.001, inputTokens: 100, outputTokens: 20, costComplete: true },
   }),
 };
 
@@ -60,6 +61,7 @@ test('两个完整周期在不同 runner 工作目录中从 GitHub SQLite 快照
     assert.equal(recovered.digest[0]?.summary, '编译器新版降低内存需求，可供开发者评估。');
     assert.deepEqual(recovered.status, {
       candidateCount: 1, processedCandidateCount: 1, pendingCandidateCount: 0, lastRunAt: '2026-11-01T01:15:00.000Z',
+      budget: { month: '2026-11', monthlyBudgetUsd: 10, spentUsd: 0.001, remainingUsd: 9.999, runSpentUsd: 0, steps: 0, pauseReason: null },
     });
     assert.equal(recovered.markdown, initial.markdown);
   } finally {
@@ -198,7 +200,7 @@ test('完整周期等待 GitHub 保存确认后才启动后续外部模型工作
   try {
     const cycle = runCycle({
       loadConfig: async () => config, state, hn: { discover: async () => [story] },
-      model: { analyze: async (request) => { modelStarted = true; return model.analyze(request); } },
+      model: { getAllowance: model.getAllowance, analyze: async (request) => { modelStarted = true; return model.analyze(request); } },
       clock: () => new Date('2026-11-01T01:00:00.000Z'),
     });
     await reached.promise;

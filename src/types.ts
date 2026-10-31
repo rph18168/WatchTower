@@ -6,6 +6,51 @@ export interface WatchTopic {
 export interface WatchTowerConfig {
   topics: WatchTopic[];
   model: string;
+  usage?: Partial<ModelUsageLimits>;
+}
+
+export interface ModelUsageLimits {
+  monthlyBudgetUsd: number;
+  runBudgetUsd: number;
+  maxSteps: number;
+  maxInputBytes: number;
+  maxOutputTokens: number;
+}
+
+export type BudgetPauseReason = 'monthly-budget' | 'run-budget' | 'steps' | 'input-size' | 'output-size' | 'unknown-cost' | 'provider-limit' | 'provider-unavailable';
+
+/** Shared by every model operation; production adapters guard every dispatch. */
+export interface ModelExecution {
+  maxOutputTokens: number;
+  beforeRequest(request: { inputBytes: number; maxOutputTokens: number }): Promise<void>;
+  recordUsage(usage: ModelCallReceipt): Promise<void>;
+}
+
+export interface ModelBudgetState {
+  pauseReason: BudgetPauseReason | null;
+  calls?: ModelCallRecord[];
+  provider?: { checkedAt: string; remainingUsd: number | null; usageMonthlyUsd: number };
+}
+
+export interface ModelCallReceipt extends ModelUsage {
+  responseId?: string;
+  model?: string;
+}
+
+export interface ModelCallRecord extends ModelCallReceipt {
+  id: string;
+  startedAt: string;
+  status: 'in-flight' | 'complete' | 'unknown';
+}
+
+export interface ModelBudgetStatus {
+  month: string;
+  monthlyBudgetUsd: number;
+  spentUsd: number;
+  remainingUsd: number;
+  runSpentUsd: number;
+  steps: number;
+  pauseReason: BudgetPauseReason | null;
 }
 
 export interface CandidateStory {
@@ -101,6 +146,7 @@ export interface MonitoringState {
   digest: DigestEntry[];
   notifications: PendingNotification[];
   lastRunAt: string | null;
+  budget?: ModelBudgetState;
 }
 
 /** save resolves only after the state is durable. Failed saves reject. */
@@ -128,13 +174,9 @@ export interface CandidateDecision {
   significance?: SignificanceProposal | null;
 }
 
-export interface ModelExecution {
-  maxOutputTokens: number;
-  beforeRequest(request: { inputBytes: number; maxOutputTokens: number }): Promise<void>;
-  recordUsage(usage: ModelUsage): Promise<void>;
-}
-
 export interface DigestModelAdapter {
+  /** null means the key has no configured cap, not unlimited funded credit. */
+  getAllowance?(): Promise<{ remainingUsd: number | null; usageMonthlyUsd: number }>;
   analyze(request: {
     model: string;
     topics: WatchTopic[];
@@ -149,7 +191,6 @@ export interface DigestModelAdapter {
     source: SourceEvidence;
     execution?: ModelExecution;
   }): Promise<{ verification: DevelopmentVerification; usage: ModelUsage }>;
-  getAllowance?(): Promise<{ remainingUsd: number | null; usageMonthlyUsd: number }>;
 }
 
 export interface RunCycleOptions {
@@ -171,6 +212,7 @@ export interface CycleResult {
     processedCandidateCount: number;
     pendingCandidateCount: number;
     lastRunAt: string;
+    budget: ModelBudgetStatus;
   };
   usage: ModelUsage | null;
 }

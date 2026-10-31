@@ -56,6 +56,7 @@ test('一个完整周期按不同领域的关注主题保留相关摘要，SQLit
       state,
       hn: { discover: async () => stories },
       model: {
+        getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }),
         analyze: async (request) => {
           requests.push(request);
           return {
@@ -64,7 +65,7 @@ test('一个完整周期按不同领域的关注主题保留相关摘要，SQLit
               { candidateId: '102', topicIds: ['astronomy'], summary: '天文台开放观测影像档案，公众可直接查阅其观测成果。' },
               { candidateId: '103', topicIds: [], summary: null },
             ],
-            usage: { costUsd: 0.0012, inputTokens: 600, outputTokens: 120 },
+            usage: { costUsd: 0.0012, inputTokens: 600, outputTokens: 120, costComplete: true },
           };
         },
       },
@@ -92,12 +93,13 @@ test('一个完整周期按不同领域的关注主题保留相关摘要，SQLit
       },
     ]);
     assert.deepEqual(requests[0]?.topics, config.topics);
-    assert.deepEqual(result.usage, { costUsd: 0.0012, inputTokens: 600, outputTokens: 120 });
+    assert.deepEqual(result.usage, { costUsd: 0.0012, inputTokens: 600, outputTokens: 120, costComplete: true });
     assert.deepEqual(result.status, {
       candidateCount: 3,
       processedCandidateCount: 3,
       pendingCandidateCount: 0,
       lastRunAt: '2026-11-01T01:00:00.000Z',
+      budget: { month: '2026-11', monthlyBudgetUsd: 10, spentUsd: 0.0012, remainingUsd: 9.9988, runSpentUsd: 0.0012, steps: 1, pauseReason: null },
     });
 
     state.close();
@@ -126,7 +128,7 @@ test('模型未生成中文摘要时保留待处理候选，SQLite 重开后下�
       loadConfig: async () => config,
       state,
       hn: { discover: async () => [stories[0]!] },
-      model: { analyze: async () => ({ decisions: [{ candidateId: '101', topicIds: ['computing'], summary: 'A compiler release reduces memory use.' }], usage: { costUsd: 0.001, inputTokens: 100, outputTokens: 20 } }) },
+      model: { getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }), analyze: async () => ({ decisions: [{ candidateId: '101', topicIds: ['computing'], summary: 'A compiler release reduces memory use.' }], usage: { costUsd: 0.001, inputTokens: 100, outputTokens: 20, costComplete: true } }) },
       clock: () => now,
     }), /Chinese digest summary/);
     state.close();
@@ -135,7 +137,7 @@ test('模型未生成中文摘要时保留待处理候选，SQLite 重开后下�
       loadConfig: async () => config,
       state,
       hn: { discover: async () => [] },
-      model: { analyze: async () => ({ decisions: [{ candidateId: '101', topicIds: ['computing'], summary: '编译器新版降低内存需求，可供开发者评估。' }], usage: { costUsd: 0.001, inputTokens: 100, outputTokens: 20 } }) },
+      model: { getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }), analyze: async () => ({ decisions: [{ candidateId: '101', topicIds: ['computing'], summary: '编译器新版降低内存需求，可供开发者评估。' }], usage: { costUsd: 0.001, inputTokens: 100, outputTokens: 20, costComplete: true } }) },
       clock: () => new Date('2026-11-01T01:15:00.000Z'),
     });
     assert.equal(recovered.digest[0]?.summary, '编译器新版降低内存需求，可供开发者评估。');
@@ -175,9 +177,10 @@ test('同一周期通过 HN 协议读取所有分页，并以帖子 ID 合并重
       state,
       hn,
       model: {
+        getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }),
         analyze: async ({ candidates }) => ({
           decisions: candidates.map(({ id }) => ({ candidateId: id, topicIds: ['computing'], summary: '本次动态已保存，详细内容可通过来源查阅。' })),
-          usage: { costUsd: 0.001, inputTokens: 200, outputTokens: 40 },
+          usage: { costUsd: 0.001, inputTokens: 200, outputTokens: 40, costComplete: true },
         }),
       },
       clock: () => now,
@@ -203,11 +206,12 @@ test('修改版本管理中的关注主题配置后，下一周期使用新描�
       state,
       hn: { discover: async () => [stories[0]!] },
       model: {
+        getAllowance: async () => ({ remainingUsd: 100, usageMonthlyUsd: 0 }),
         analyze: async ({ topics, candidates }: Parameters<DigestModelAdapter['analyze']>[0]) => {
           topicsSeen.push(topics.map(({ description }) => description));
           return {
             decisions: candidates.map(({ id }) => ({ candidateId: id, topicIds: [topics[0]!.id], summary: id === '101' ? '编译器更新降低开发环境的内存需求。' : '新的面包制作方法介绍了发酵过程。' })),
-            usage: { costUsd: 0.001, inputTokens: 200, outputTokens: 40 },
+            usage: { costUsd: 0.001, inputTokens: 200, outputTokens: 40, costComplete: true },
           };
         },
       },

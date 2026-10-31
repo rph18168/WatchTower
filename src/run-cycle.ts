@@ -1,4 +1,6 @@
-import type { CandidateDecision, CycleResult, DevelopmentVerification, DigestEntry, ModelUsage, MonitoringState, RunCycleOptions, SourceEvidence, TelegramSendResult, WatchTowerConfig } from './types.ts';
+import type { CandidateDecision, CycleResult, DevelopmentVerification, DigestEntry, ModelBudgetStatus, MonitoringState, RunCycleOptions, SourceEvidence, TelegramSendResult, WatchTowerConfig } from './types.ts';
+import { createModelBudget } from './budget.ts';
+import { modelUsageLimits } from './config.ts';
 
 export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
   const config = await options.loadConfig();
@@ -21,37 +23,40 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
   // A model/network failure must not discard candidates already collected.
   await options.state.save(state);
   const pending = state.candidates.filter(({ status }) => status === 'pending');
-  let usage: CycleResult['usage'] = null;
+  const budget = createModelBudget({ state, store: options.state, config, model: options.model, clock: options.clock ?? (() => new Date()) });
   if (pending.length > 0) {
-    const result = await options.model.analyze({ model: config.model, topics: config.topics, candidates: pending.map(({ story }) => story) });
-    validateDecisions(result.decisions, pending.map(({ story }) => story.id), config);
-    usage = result.usage;
-    for (const decision of result.decisions) {
-      const candidate = pending.find(({ story }) => story.id === decision.candidateId)!;
-      candidate.status = 'processed';
-      candidate.processedAt = now;
-      candidate.topicIds = decision.topicIds;
-      if (decision.topicIds.length > 0 && decision.significance) {
-        candidate.notificationReview = { proposal: decision.significance, status: 'pending' };
-      }
-      if (decision.topicIds.length > 0) {
-        state.digest.push({
-          id: `digest:${candidate.story.id}`,
-          candidateId: candidate.story.id,
-          title: candidate.story.title,
-          summary: decision.summary!,
-          topicIds: decision.topicIds,
-          sources: [
-            ...(candidate.story.url ? [{ kind: 'original' as const, url: candidate.story.url }] : []),
-            { kind: 'hn', url: candidate.story.hnUrl },
-          ],
-          createdAt: now,
-        });
+    const input = { model: config.model, topics: config.topics, candidates: pending.map(({ story }) => story) };
+    const result = await budget.execute(input, (execution) => options.model.analyze({ ...input, execution }));
+    if (result) {
+      validateDecisions(result.decisions, pending.map(({ story }) => story.id), config);
+      for (const decision of result.decisions) {
+        const candidate = pending.find(({ story }) => story.id === decision.candidateId)!;
+        candidate.status = 'processed';
+        candidate.processedAt = now;
+        candidate.topicIds = decision.topicIds;
+        if (decision.topicIds.length > 0 && decision.significance) {
+          candidate.notificationReview = { proposal: decision.significance, status: 'pending' };
+        }
+        if (decision.topicIds.length > 0) {
+          state.digest.push({
+            id: `digest:${candidate.story.id}`,
+            candidateId: candidate.story.id,
+            title: candidate.story.title,
+            summary: decision.summary!,
+            topicIds: decision.topicIds,
+            sources: [
+              ...(candidate.story.url ? [{ kind: 'original' as const, url: candidate.story.url }] : []),
+              { kind: 'hn', url: candidate.story.hnUrl },
+            ],
+            createdAt: now,
+          });
+        }
       }
     }
   }
   if (options.sources && options.model.verifyDevelopment) {
     for (const candidate of state.candidates.filter(({ notificationReview }) => notificationReview?.status === 'pending')) {
+      if (['monthly-budget', 'run-budget', 'steps', 'unknown-cost'].includes(budget.status().pauseReason ?? '')) break;
       const review = candidate.notificationReview!;
       if (!candidate.story.url) {
         review.status = 'complete';
@@ -65,8 +70,12 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
         addUncertainty(state, candidate.story.id, '来源正文未能完整核实，暂不主动通知。');
         continue;
       }
-      const result = await options.model.verifyDevelopment({ model: config.model, topics: config.topics, candidate: candidate.story, proposal: review.proposal, source });
-      usage = combineUsage(usage, result.usage);
+      // The linked page is the verification evidence. Do not repeat a possibly
+      // large HN story body in this second, separately admitted model request.
+      const { id, title, url, hnUrl, score, publishedAt } = candidate.story;
+      const input = { model: config.model, topics: config.topics, candidate: { id, title, url, hnUrl, score, publishedAt }, proposal: review.proposal, source };
+      const result = await budget.execute(input, (execution) => options.model.verifyDevelopment!({ ...input, execution }));
+      if (!result) continue;
       review.status = 'complete';
       if (!supportedVerification(result.verification, source)) {
         addUncertainty(state, candidate.story.id, '关键事实证据不足，暂不主动通知。');
@@ -81,6 +90,7 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
       });
     }
   }
+  const budgetStatus = budget.status();
   state.lastRunAt = now;
   await options.state.save(state);
   if (options.telegram) {
@@ -97,7 +107,7 @@ export async function runCycle(options: RunCycleOptions): Promise<CycleResult> {
       await options.state.save(state);
     }
   }
-  return cycleResult(state, usage, now);
+  return cycleResult(state, budget.usage(), now, budgetStatus);
 }
 
 function addUncertainty(state: MonitoringState, candidateId: string, note: string): void {
@@ -114,16 +124,6 @@ function supportedVerification(verification: DevelopmentVerification, source: So
     verification.claims.every(({ statement, sourceId, quote }) => typeof statement === 'string' && statement.trim() && sourceId === source.id && typeof quote === 'string' && quote.trim().length >= 12 && source.text.includes(quote));
 }
 
-function combineUsage(left: ModelUsage | null, right: ModelUsage): ModelUsage {
-  if (!left) return right;
-  return {
-    costUsd: left.costUsd === null || right.costUsd === null ? null : left.costUsd + right.costUsd,
-    inputTokens: left.inputTokens === null || right.inputTokens === null ? null : left.inputTokens + right.inputTokens,
-    outputTokens: left.outputTokens === null || right.outputTokens === null ? null : left.outputTokens + right.outputTokens,
-    costComplete: left.costComplete === true && right.costComplete === true,
-  };
-}
-
 function validateConfiguration(config: WatchTowerConfig): void {
   if (!config || !Array.isArray(config.topics) || config.topics.length === 0 || typeof config.model !== 'string' || !config.model.trim()) {
     throw new Error('Configuration requires a model and at least one Watch Topic');
@@ -135,6 +135,7 @@ function validateConfiguration(config: WatchTowerConfig): void {
     }
     ids.add(topic.id);
   }
+  modelUsageLimits(config);
 }
 
 function validateDecisions(decisions: CandidateDecision[], pendingIds: string[], config: WatchTowerConfig): void {
@@ -152,7 +153,7 @@ function validateDecisions(decisions: CandidateDecision[], pendingIds: string[],
   if (remaining.size > 0) throw new Error('Model response omitted candidate decisions');
 }
 
-function cycleResult(state: MonitoringState, usage: CycleResult['usage'], now: string): CycleResult {
+function cycleResult(state: MonitoringState, usage: CycleResult['usage'], now: string, budget: ModelBudgetStatus): CycleResult {
   const processed = state.candidates.filter(({ status }) => status === 'processed').length;
   return {
     digest: state.digest,
@@ -163,6 +164,7 @@ function cycleResult(state: MonitoringState, usage: CycleResult['usage'], now: s
       processedCandidateCount: processed,
       pendingCandidateCount: state.candidates.length - processed,
       lastRunAt: now,
+      budget,
     },
     usage,
   };

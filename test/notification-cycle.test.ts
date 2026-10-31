@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createSqliteStateStore, createTelegramSender, runCycle } from '../src/index.ts';
+import { createGitHubStateStore, createSqliteStateStore, createTelegramSender, runCycle } from '../src/index.ts';
 
 const now = new Date('2026-11-01T01:00:00.000Z');
 const story = {
@@ -158,8 +158,8 @@ test('保存待发送通知失败时不发送；确认保存失败后从持久�
   }
 });
 
-test('普通相关、不相关、无来源、截断来源及伪造引文都只保留有不确定性说明的摘要', async () => {
-  for (const scenario of ['ordinary', 'unrelated', 'unavailable', 'truncated', 'forged'] as const) {
+test('普通相关仅留摘要，不相关不收录；不可核实或未获支持的重大动态不通知', async () => {
+  for (const scenario of ['ordinary', 'unrelated', 'no-link', 'unavailable', 'truncated', 'forged', 'wrong-source', 'unknown-role', 'unsupported'] as const) {
     const directory = await mkdtemp(join(tmpdir(), 'watchtower-evidence-'));
     const state = createSqliteStateStore(join(directory, 'state.sqlite'));
     let reads = 0;
@@ -167,11 +167,20 @@ test('普通相关、不相关、无来源、截断来源及伪造引文都只�
     let sends = 0;
     try {
       const result = await runCycle({
-        loadConfig: async () => config, state, hn: { discover: async () => [story] },
+        loadConfig: async () => config, state, hn: { discover: async () => [{ ...story, url: scenario === 'no-link' ? undefined : story.url }] },
         model: {
           ...significantModel,
           analyze: async () => ({ decisions: [{ candidateId: story.id, topicIds: scenario === 'unrelated' ? [] : ['astronomy'], summary: scenario === 'unrelated' ? null : '天文台的新动态已记录。', significance: ['ordinary', 'unrelated'].includes(scenario) ? null : proposal }], usage }),
-          verifyDevelopment: async () => { verifies++; return { verification: { ...verification, claims: [{ statement: proposal.change, sourceId: source.id, quote: 'This statement does not occur in the page.' }] }, usage }; },
+          verifyDevelopment: async () => {
+            verifies++;
+            return { verification: {
+              ...verification,
+              supported: scenario !== 'unsupported',
+              uncertainty: scenario === 'unsupported' ? '该来源未确认这一新变化。' : null,
+              sourceRole: scenario === 'unknown-role' ? 'unknown' as const : verification.sourceRole,
+              claims: [{ statement: proposal.change, sourceId: scenario === 'wrong-source' ? 'source:not-read' : source.id, quote: scenario === 'forged' ? 'This statement does not occur in the page.' : source.text }],
+            }, usage };
+          },
         },
         sources: { read: async () => { reads++; return scenario === 'unavailable' ? { ...source, status: 'unavailable' as const, text: '', failureCode: 'network' as const } : { ...source, truncated: scenario === 'truncated' }; } },
         telegram: { send: async () => { sends++; return { status: 'sent', messageId: '56' }; } }, clock: () => now,
@@ -179,9 +188,9 @@ test('普通相关、不相关、无来源、截断来源及伪造引文都只�
       assert.equal(sends, 0, scenario);
       assert.equal(result.notifications.length, 0, scenario);
       assert.equal(result.digest.length, scenario === 'unrelated' ? 0 : 1);
-      assert.equal(reads, ['ordinary', 'unrelated'].includes(scenario) ? 0 : 1);
-      assert.equal(verifies, scenario === 'forged' ? 1 : 0);
-      if (['unavailable', 'truncated', 'forged'].includes(scenario)) assert.match(result.digest[0]!.summary, /未能完整核实|证据不足/);
+      assert.equal(reads, ['ordinary', 'unrelated', 'no-link'].includes(scenario) ? 0 : 1);
+      assert.equal(verifies, ['forged', 'wrong-source', 'unknown-role', 'unsupported'].includes(scenario) ? 1 : 0);
+      if (!['ordinary', 'unrelated'].includes(scenario)) assert.match(result.digest[0]!.summary, /未能完整核实|证据不足|未提供可核实/);
     } finally {
       state.close();
       await rm(directory, { recursive: true, force: true });
@@ -212,5 +221,98 @@ test('Telegram 只有明确的本人私聊成功响应才能确认送达，错�
       state.close();
       await rm(directory, { recursive: true, force: true });
     }
+  }
+});
+
+test('GitHub 远端快照保存完成后才发送，新的 runner 可读取送达确认', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-remote-outbox-'));
+  let snapshot: { version: string; database: Uint8Array } | null = null;
+  let commits = 0;
+  const github = {
+    readSnapshot: async () => snapshot,
+    commitSnapshot: async ({ expectedVersion, database }: { expectedVersion: string | null; database: Uint8Array }) => {
+      assert.equal(expectedVersion, snapshot?.version ?? null);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      snapshot = { version: `commit-${++commits}`, database: Uint8Array.from(database) };
+      return snapshot.version;
+    },
+  };
+  const state = createGitHubStateStore({ path: join(directory, 'runner-one.sqlite'), github });
+  const observer = createGitHubStateStore({ path: join(directory, 'runner-two.sqlite'), github });
+  try {
+    const result = await runCycle({
+      loadConfig: async () => config, state, hn: { discover: async () => [story] }, model: significantModel,
+      sources: { read: async () => source },
+      telegram: { send: async () => {
+        assert.equal((await observer.load()).notifications[0]?.status, 'pending');
+        return { status: 'sent', messageId: '62' };
+      } }, clock: () => now,
+    });
+    assert.equal(result.notifications[0]?.status, 'sent');
+    assert.equal((await observer.load()).notifications[0]?.status, 'sent');
+  } finally {
+    state.close(); observer.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('摘要耗尽本轮额度后不绕过预算，下一周期从核实进度继续且不重复携带超大 HN 正文', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-verification-budget-'));
+  const path = join(directory, 'state.sqlite');
+  let state = createSqliteStateStore(path);
+  let verifications = 0;
+  const model = { ...significantModel, verifyDevelopment: async () => { verifications++; return { verification, usage }; } };
+  try {
+    const first = await runCycle({
+      loadConfig: async () => ({ ...config, usage: { runBudgetUsd: 0.001, maxInputBytes: 128_000 } }), state,
+      hn: { discover: async () => [{ ...story, text: '背景资料'.repeat(6000) }] }, model, sources: { read: async () => source },
+      telegram: { send: async () => { throw new Error('核实未准入时不应产生通知'); } }, clock: () => now,
+    });
+    assert.equal(verifications, 0);
+    assert.equal(first.digest.length, 1);
+    assert.equal(first.notifications.length, 0);
+    assert.equal(first.usage?.costUsd, 0.001);
+    assert.equal((await state.load()).candidates[0]?.notificationReview?.status, 'pending');
+    state.close();
+    state = createSqliteStateStore(path);
+    const next = await runCycle({
+      loadConfig: async () => ({ ...config, usage: { runBudgetUsd: 0.01 } }), state,
+      hn: { discover: async () => [] }, model: { ...model, analyze: async () => { throw new Error('摘要已经持久保存'); } },
+      sources: { read: async () => source }, telegram: { send: async () => ({ status: 'sent', messageId: '63' }) }, clock: () => new Date('2026-11-01T01:15:00.000Z'),
+    });
+    assert.equal(verifications, 1);
+    assert.equal(next.notifications[0]?.status, 'sent');
+    assert.equal(next.usage?.costUsd, 0.001);
+  } finally {
+    state.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('单个核实来源超过输入预算时保持待核实，并继续处理后续可容纳的来源', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-verification-size-'));
+  const state = createSqliteStateStore(join(directory, 'state.sqlite'));
+  const secondStory = { ...story, id: '404', title: 'A second observatory opens infrared images', url: 'https://observatory.example/infrared', hnUrl: 'https://news.ycombinator.com/item?id=404' };
+  const secondProposal = { change: '第二天文台开放红外观测影像。', whyItMatters: '研究者可直接查阅新的红外资料。' };
+  const secondSource = { ...source, id: 'source:404', candidateId: '404', originalUrl: secondStory.url, finalUrl: secondStory.url, text: 'Our second observatory opens its infrared image archive to the public today.' };
+  const model = {
+    getAllowance: significantModel.getAllowance,
+    analyze: async () => ({ decisions: [story, secondStory].map(({ id }) => ({ candidateId: id, topicIds: ['astronomy'], summary: '新的天文观测资料现已发布。', significance: id === '401' ? proposal : secondProposal })), usage }),
+    verifyDevelopment: async () => ({ verification: { ...verification, ...secondProposal, claims: [{ statement: secondProposal.change, sourceId: secondSource.id, quote: secondSource.text }] }, usage }),
+  };
+  try {
+    await runCycle({ loadConfig: async () => ({ ...config, usage: { runBudgetUsd: 0.001 } }), state, hn: { discover: async () => [story, secondStory] }, model, clock: () => now });
+    const result = await runCycle({
+      loadConfig: async () => ({ ...config, usage: { maxInputBytes: 8000 } }), state, hn: { discover: async () => [] }, model,
+      sources: { read: async ({ candidateId }) => candidateId === '401' ? { ...source, text: '公开数据。'.repeat(2400) } : secondSource },
+      telegram: { send: async () => ({ status: 'sent', messageId: '64' }) }, clock: () => now,
+    });
+    assert.deepEqual(result.notifications.map(({ candidateId }) => candidateId), ['404']);
+    const persisted = await state.load();
+    assert.equal(persisted.candidates[0]?.notificationReview?.status, 'pending');
+    assert.equal(persisted.candidates[1]?.notificationReview?.status, 'complete');
+  } finally {
+    state.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
