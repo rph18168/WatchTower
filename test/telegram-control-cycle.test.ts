@@ -545,3 +545,30 @@ test('/status 说明持久投递故障，去重的 /resume 为修复后重新发
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('恢复后不重发旧预算告警，同时保留结果不确定的投递尝试历史', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-budget-notice-audit-'));
+  const path = join(directory, 'state.sqlite');
+  let state = createSqliteStateStore(path);
+  let sends = 0;
+  const adapters = {
+    hn: { discover: async () => [] }, model: { analyze: async () => { throw new Error('没有模型工作'); } },
+    telegram: { getUpdates: async () => [], send: async () => { sends += 1; return { status: 'unknown' as const, failureCode: 'network' as const }; } },
+  };
+  try {
+    const first = await runCycle({ ...adapters, loadConfig: async () => ({ ...config, usage: { monthlyBudgetUsd: 0 } }), state, clock: () => now });
+    assert.equal(first.notifications[0]?.attempts.length, 1);
+    state.close(); state = createSqliteStateStore(path);
+    const recoveredAt = '2026-11-01T01:15:00.000Z';
+    const recovered = await runCycle({ ...adapters, loadConfig: async () => config, state, clock: () => new Date(recoveredAt) });
+    assert.equal(sends, 1);
+    assert.equal(recovered.notifications.length, 1);
+    const notice = recovered.notifications[0]!;
+    assert.equal(notice.kind, 'budget-status');
+    assert.deepEqual(notice.attempts, first.notifications[0]!.attempts);
+    if (notice.kind === 'budget-status') assert.equal(notice.withdrawnAt, recoveredAt);
+  } finally {
+    state.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

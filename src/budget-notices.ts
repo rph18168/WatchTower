@@ -7,7 +7,12 @@ export function updateBudgetNotice(state: MonitoringState, config: WatchTowerCon
   const previous = control.budgetNotice ??= { fingerprint: null, sequence: 0 };
   const fingerprint = budget.pauseReason ? JSON.stringify({ month: budget.month, reason: budget.pauseReason, limits: modelUsageLimits(config) }) : null;
   if (previous.fingerprint === fingerprint) return;
-  state.notifications = state.notifications.filter((notification) => notification.kind !== 'budget-status' || notification.status !== 'pending');
+  state.notifications = state.notifications.filter((notification) => {
+    if (notification.kind !== 'budget-status' || notification.status !== 'pending') return true;
+    if (!notification.attempts.length) return false;
+    notification.withdrawnAt ??= now;
+    return true;
+  });
   previous.fingerprint = fingerprint;
   if (!budget.pauseReason) return;
   previous.sequence += 1;

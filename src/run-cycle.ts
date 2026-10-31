@@ -28,7 +28,7 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
         if (update.command === 'pause' || update.command === 'resume') {
           control.manuallyPaused = update.command === 'pause';
           if (update.command === 'resume') control.deliveryRetryGeneration = (control.deliveryRetryGeneration ?? 0) + 1;
-          const deliveryFault = state.notifications.some((notification) => notification.status === 'pending' && notification.attempts.some((attempt) => 'permanent' in attempt && attempt.permanent));
+          const deliveryFault = state.notifications.some((notification) => notification.status === 'pending' && ownsDelivery(notification) && notification.attempts.some((attempt) => 'permanent' in attempt && attempt.permanent));
           state.notifications.push({
             kind: 'command-reply', origin: 'command-reply', id: `command:${update.updateId}`,
             text: update.command === 'pause'
@@ -283,7 +283,7 @@ function renderStatus(state: MonitoringState, budget: ModelBudgetStatus, now: st
     `模型工作：${budget.pauseReason ? `预算暂停（${budget.pauseReason}）` : '请求前仍需通过用量检查'}\n` +
     `月预算（UTC ${budget.month}）：已用 US$${budget.spentUsd.toFixed(4)} / US$${budget.monthlyBudgetUsd.toFixed(4)}，剩余 US$${budget.remainingUsd.toFixed(4)}\n` +
     `服务方额度：${providerStatus}${provider ? `；本月用量 US$${provider.usageMonthlyUsd.toFixed(4)}（${provider.checkedAt} 检查）` : ''}\n` +
-    `待处理候选：${state.candidates.filter(({ status }) => status === 'pending').length}；待核实：${state.candidates.filter(({ notificationReview }) => notificationReview?.status === 'pending').length}；待发送：${state.notifications.filter(({ status }) => status === 'pending').length}\n` +
+    `待处理候选：${state.candidates.filter(({ status }) => status === 'pending').length}；待核实：${state.candidates.filter(({ notificationReview }) => notificationReview?.status === 'pending').length}；待发送：${state.notifications.filter((notification) => notification.status === 'pending' && ownsDelivery(notification)).length}\n` +
     `投递结果不确定：${uncertain}；不可恢复故障：${permanent}${deliveryCodes.length ? `（${deliveryCodes.join('、')}）` : ''}\n` +
     `最近成功周期：${state.lastRunAt ?? '尚无'}\n临时故障：${state.control?.fault ? `${faultLabel(state.control.fault.code)}（${state.control.fault.at}）` : '无'}`;
 }

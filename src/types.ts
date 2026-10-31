@@ -159,6 +159,8 @@ export interface CommandReplyNotification extends NotificationDelivery {
 export interface BudgetStatusNotification extends NotificationDelivery {
   kind: 'budget-status';
   origin: 'proactive';
+  /** Obsolete reports retain attempted-delivery history without further sends. */
+  withdrawnAt?: string;
 }
 
 export interface OvernightSummaryNotification extends NotificationDelivery {
