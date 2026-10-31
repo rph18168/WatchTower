@@ -1,4 +1,51 @@
-import type { TelegramSendAdapter } from '../types.ts';
+import type { TelegramCommand, TelegramControlAdapter, TelegramSendAdapter } from '../types.ts';
+
+export class TelegramPollingError extends Error {
+  constructor() {
+    super('Telegram command polling is temporarily unavailable');
+    this.name = 'TelegramPollingError';
+  }
+}
+
+/** Authentication and command parsing happen before any update leaves this closure. */
+export function createTelegramAdapter(options: {
+  botToken: string;
+  personalChatId: string;
+  personalUserId: string;
+  fetch?: typeof fetch;
+}): TelegramControlAdapter {
+  const sender = createTelegramSender(options);
+  if (!/^[1-9]\d*$/.test(options.personalUserId) || !Number.isSafeInteger(Number(options.personalUserId))) {
+    throw new Error('A numeric personal Telegram user is required');
+  }
+  const endpoint = `https://api.telegram.org/bot${options.botToken}/getUpdates`;
+  return {
+    ...sender,
+    async getUpdates({ offset }) {
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new TelegramPollingError();
+      try {
+        const response = await (options.fetch ?? fetch)(endpoint, {
+          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ offset, limit: 100, timeout: 0, allowed_updates: ['message'] }),
+        });
+        const value = await response.json();
+        if (!response.ok || value?.ok !== true || !Array.isArray(value.result) || value.result.length > 100) throw new TelegramPollingError();
+        return value.result.map((update: any) => {
+          if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0 || update.update_id >= Number.MAX_SAFE_INTEGER) throw new TelegramPollingError();
+          const message = update.message;
+          const authorized = message?.chat?.type === 'private' && String(message.chat.id) === options.personalChatId &&
+            String(message.from?.id) === options.personalUserId && message.from?.is_bot !== true;
+          const match = authorized && typeof message.text === 'string' ? /^\/(digest|status|pause|resume)\s*$/.exec(message.text) : null;
+          return { updateId: update.update_id, command: match ? match[1] as TelegramCommand : null };
+        });
+      } catch {
+        // Do not retain bot URLs, raw API errors, identities or message contents.
+        throw new TelegramPollingError();
+      }
+    },
+  };
+}
 
 /** Fixed personal private receiver; secrets and identity never leave this closure. */
 export function createTelegramSender(options: {

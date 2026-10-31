@@ -114,6 +114,18 @@ export interface TelegramSendAdapter {
   send(request: { text: string }): Promise<TelegramSendResult>;
 }
 
+export type TelegramCommand = 'digest' | 'status' | 'pause' | 'resume';
+
+/** Identity and raw message content have already been checked inside the adapter. */
+export interface TelegramControlUpdate {
+  updateId: number;
+  command: TelegramCommand | null;
+}
+
+export interface TelegramControlAdapter extends TelegramSendAdapter {
+  getUpdates(request: { offset: number }): Promise<TelegramControlUpdate[]>;
+}
+
 /** Shared durable outbox fields; recipient identity never enters the queue. */
 export interface NotificationDelivery {
   id: string;
@@ -159,6 +171,11 @@ export interface DigestEntry {
   createdAt: string;
 }
 
+export interface MonitoringFault {
+  code: 'telegram-updates' | 'candidate-discovery' | 'model-processing' | 'source-reading';
+  at: string;
+}
+
 export interface MonitoringState {
   schemaVersion: 1;
   candidates: StoredCandidate[];
@@ -166,6 +183,12 @@ export interface MonitoringState {
   notifications: PendingNotification[];
   lastRunAt: string | null;
   budget?: ModelBudgetState;
+  control?: {
+    manuallyPaused: boolean;
+    telegramOffset?: number;
+    lastHandledUpdateId?: number;
+    fault?: MonitoringFault;
+  };
 }
 
 /** save resolves only after the state is durable. Failed saves reject. */
@@ -213,12 +236,14 @@ export interface DigestModelAdapter {
 }
 
 export interface RunCycleOptions {
+  /** Process and deliver authorized control replies without autonomous work. */
+  commandsOnly?: boolean;
   loadConfig(): Promise<WatchTowerConfig>;
   state: StateStore;
   hn: HackerNewsAdapter;
   model: DigestModelAdapter;
   sources?: SourceReaderAdapter;
-  telegram?: TelegramSendAdapter;
+  telegram?: TelegramSendAdapter & Partial<Pick<TelegramControlAdapter, 'getUpdates'>>;
   clock?: () => Date;
 }
 
@@ -227,6 +252,8 @@ export interface CycleResult {
   markdown: string;
   notifications: PendingNotification[];
   status: {
+    manuallyPaused: boolean;
+    fault: MonitoringFault | null;
     candidateCount: number;
     processedCandidateCount: number;
     pendingCandidateCount: number;
