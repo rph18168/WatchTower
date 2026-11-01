@@ -28,12 +28,16 @@ const candidateSchema = z.looseObject({ story: z.looseObject({ id: z.string() })
 const digestSchema = z.looseObject({ id: z.string(), summary: z.string() });
 type Call = z.infer<typeof callSchema>;
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
+const sensitiveFields = ['apiKey', 'api_key', 'token', 'botToken', 'bot_token', 'chatId', 'chat_id',
+  'userId', 'user_id', 'telegramChatId', 'telegramUserId', 'authorization', 'secret', 'secrets'];
+const privateField = new RegExp(`^(?:${sensitiveFields.join('|')})$`, 'i');
+const privateFieldMarker = new RegExp(`"(?:${sensitiveFields.join('|')})"\\s*:`, 'i');
 
 export class SnapshotInvalid extends Error {}
 
 export function callTotals(calls: Call[]) {
   const costComplete = calls.every(call => call.status === 'complete' && call.costComplete === true && typeof call.costUsd === 'number');
-  const knownCostUsd = Number(calls.reduce((sum, call) => sum + (call.costComplete ? call.costUsd ?? 0 : 0), 0).toFixed(12));
+  const knownCostUsd = Number(calls.reduce((sum, call) => sum + (call.costUsd ?? 0), 0).toFixed(12));
   return {
     count: calls.length, costComplete, costUsd: costComplete ? knownCostUsd : null, knownCostUsd,
     inputTokens: calls.every(call => typeof call.inputTokens === 'number') ? calls.reduce((sum, call) => sum + call.inputTokens!, 0) : null,
@@ -53,7 +57,6 @@ function inspect(bytes: Buffer, path: string) {
     if (rawRuntime.length !== 1) throw new SnapshotInvalid();
     const raw = { runtime: rawRuntime[0], candidates: rows('candidates'), digest: rows('digest_entries') };
     const rawMaterialPaths: string[] = [], sensitiveFieldPaths: string[] = [];
-    const privateField = /^(?:apiKey|api_key|token|botToken|bot_token|chatId|chat_id|userId|user_id|telegramChatId|telegramUserId|authorization|secret|secrets)$/i;
     function scan(value: unknown, path: string) {
       if (!value || typeof value !== 'object') return;
       for (const [key, child] of Object.entries(value)) {
@@ -65,7 +68,7 @@ function inspect(bytes: Buffer, path: string) {
     }
     scan(raw, 'state');
     const privacy = { rawMaterialPaths, sensitiveFieldPaths,
-      physicalPrivateKeyMarkers: /"(?:apiKey|api_key|token|botToken|bot_token|chatId|chat_id|userId|user_id|telegramChatId|telegramUserId|authorization|secret|secrets)"\s*:/i.test(bytes.toString('utf8')) };
+      physicalPrivateKeyMarkers: privateFieldMarker.test(bytes.toString('utf8')) };
     const runtime = runtimeSchema.parse(raw.runtime);
     const candidates = z.array(candidateSchema).parse(raw.candidates);
     const digest = z.array(digestSchema).parse(raw.digest);

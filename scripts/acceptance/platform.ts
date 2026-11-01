@@ -46,12 +46,14 @@ export async function inspectPlatform(fetchStatus: typeof fetch, now: () => Date
   const historyResponse = await readStatus('incidents', fetchStatus, now);
   const history = z.object({ incidents: z.array(incidentSchema) }).parse(historyResponse.data);
   const fresh = summaryResponse.http.fresh && historyResponse.http.fresh;
+  const windowStart = Date.parse(since);
   return { exitCode: fresh ? 0 : 4, detail: {
     result: fresh ? 'PLATFORM_CHECKED' : 'PLATFORM_FRESHNESS_UNVERIFIED', since,
     summary: { http: summaryResponse.http, status: summary.status,
       actionsStatus: summary.components.find(component => component.name === 'Actions')?.status ?? null, incidents: summary.incidents },
     history: { http: historyResponse.http, returnedCount: history.incidents.length,
-      incidents: history.incidents.filter(incident => Date.parse(incident.created_at) >= Date.parse(since)) },
+      incidents: history.incidents.filter(incident => incident.resolved_at === null ||
+        [incident.created_at, incident.updated_at, incident.resolved_at].some(at => Date.parse(at) >= windowStart)) },
     limitation: 'Public status and the returned recent incident window do not establish per-workflow scheduler health.',
   } };
 }

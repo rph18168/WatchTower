@@ -38,7 +38,9 @@ test('官方状态必须带可核对的 HTTP 时间，过期缓存不能作为�
     return new Response(JSON.stringify(summary
       ? { status: { indicator: 'none', description: 'All Systems Operational' }, components: [{ id: 'actions', name: 'Actions', status: 'operational' }], incidents: [] }
       : { incidents: [{ id: 'incident1', name: 'Actions delayed', status: 'resolved',
-        created_at: '2026-12-02T00:00:00Z', updated_at: '2026-12-02T00:01:00Z', resolved_at: '2026-12-02T00:01:00Z', components: [{ name: 'Actions' }] }] }),
+        created_at: '2026-12-01T23:59:00Z', updated_at: '2026-12-02T00:01:00Z', resolved_at: '2026-12-02T00:01:00Z', components: [{ name: 'Actions' }] },
+        { id: 'old', name: 'Earlier resolved issue', status: 'resolved', created_at: '2026-11-30T00:00:00Z',
+          updated_at: '2026-11-30T01:00:00Z', resolved_at: '2026-11-30T01:00:00Z', components: [] }] }),
     { headers: { date: 'Wed, 02 Dec 2026 00:01:00 GMT', age } });
   };
   const args = ['platform', '--since', '2026-12-02T00:00:00Z', '--out', directory];
@@ -48,7 +50,7 @@ test('官方状态必须带可核对的 HTTP 时间，过期缓存不能作为�
     const fresh = JSON.parse(await readFile(join(directory, 'platform.json'), 'utf8'));
     assert.equal(fresh.summary.http.ageSeconds, 10);
     assert.equal(fresh.summary.actionsStatus, 'operational');
-    assert.equal(fresh.history.incidents[0].id, 'incident1');
+    assert.deepEqual(fresh.history.incidents.map((incident: { id: string }) => incident.id), ['incident1']);
     age = '86400';
     const stale = await acceptanceCommand(args, dependencies);
     assert.equal(stale.exitCode, 4);
@@ -157,17 +159,23 @@ test('固定 SHA 的只读快照比较保留旧摘要、费用和 message7，未
     assert.equal(JSON.stringify(report).includes('旧摘要'), false);
     const afterBytes = await readFile(join(directory, 'after.sqlite'));
     assert.deepEqual(await readFile(join(directory, 'evidence', `${after}.sqlite`)), afterBytes);
-    // A later recorded call with no receipt must never become a zero-cost success.
-    const unknownPath = join(directory, 'after.sqlite');
-    const database = new DatabaseSync(unknownPath);
-    const runtime = JSON.parse(String(database.prepare('SELECT payload FROM runtime_state').get()!.payload));
-    runtime.budget.calls[1] = { ...newCall, status: 'unknown', costUsd: null, costComplete: false };
-    database.prepare('UPDATE runtime_state SET payload = ?').run(JSON.stringify(runtime));
-    database.close();
-    assert.equal((await acceptanceCommand(args, { github })).exitCode, 4);
-    const unknown = JSON.parse(await readFile(join(directory, 'evidence', 'compare.json'), 'utf8'));
-    assert.equal(unknown.newCallTotals.costUsd, null);
-    assert.equal(unknown.newCallTotals.costComplete, false);
+    // Missing and partial receipts keep the unknown total while retaining observed charges.
+    const receipts: { costUsd: number | null; known: number; monthKnown: number }[] = [
+      { costUsd: null, known: 0, monthKnown: 0.01 }, { costUsd: 0.04, known: 0.04, monthKnown: 0.05 },
+    ];
+    for (const receipt of receipts) {
+      const database = new DatabaseSync(join(directory, 'after.sqlite'));
+      const runtime = JSON.parse(String(database.prepare('SELECT payload FROM runtime_state').get()!.payload));
+      runtime.budget.calls[1] = { ...newCall, status: 'unknown', costUsd: receipt.costUsd, costComplete: false };
+      database.prepare('UPDATE runtime_state SET payload = ?').run(JSON.stringify(runtime));
+      database.close();
+      assert.equal((await acceptanceCommand(args, { github })).exitCode, 4);
+      const unknown = JSON.parse(await readFile(join(directory, 'evidence', 'compare.json'), 'utf8'));
+      assert.equal(unknown.newCallTotals.costUsd, null);
+      assert.equal(unknown.newCallTotals.costComplete, false);
+      assert.equal(unknown.newCallTotals.knownCostUsd, receipt.known);
+      assert.equal(unknown.after.fees.byUtcMonth['2026-12'].knownCostUsd, receipt.monthKnown);
+    }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
