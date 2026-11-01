@@ -20,10 +20,10 @@ gh workflow run watchtower.yml --repo rph18168/WatchTower --ref $codeBranch -f m
 ## 有界真实闭环
 
 1. 在明确进入真实验收后，只开启手动真实变量，继续关闭定时变量。启动 `mode=live`，检查真实 HN 候选、完成的模型 generation 收据和 SQLite 摘要。初始近 48 小时历史只建基线，不推历史新闻；若一次预算只处理部分基线，后续 `live` 沿用原截止时间继续，不重置基线。
-2. 摘要实际保存后，由本人在已配置 bot 的本人私聊中发送 `/digest` 和 `/status`。在首轮摘要生成前发送 `/digest` 会读到旧／空摘要，不能证明新摘要已送达。
+2. 摘要实际保存后，由本人在已配置 bot 的本人私聊中发送 `/digest`，也可随同发送 `/status`。在首轮摘要生成前发送 `/digest` 会读到旧／空摘要，不能证明新摘要已送达。
 3. 启动第二个独立 workflow run，选择 `mode=commands`。它从同一状态分支恢复、验证相同本人身份并回复持久摘要，不注入 OpenRouter key，不采集或调用模型，也不投递主动队列。夜间仍允许命令回复。
 4. 核对第二轮保留第一轮选定的候选、摘要、模型 call IDs 和费用；`/digest` 正文来自第一轮摘要并保留 HN／原文入口。SQLite 应有对应 `kind=command-reply`、`status=sent`、`sentAt`、Telegram `messageId` 和成功发送尝试。
-5. 由本人实际发送 `/pause`、查询状态、再发送 `/resume`，在后续真实 run 观察回复和持久控制状态。恢复不能绕过预算。本人确认摘要的可见内容；发送 API 的成功回执只证明 Telegram 接受消息，不证明本人已看见或阅读。[Telegram 更新及发送接口](https://core.telegram.org/bots/api)
+5. 可选观察：本人可实际发送 `/status`、`/pause`、`/resume`，观察回复和持久控制状态，也可反馈摘要可见内容与阅读体验。四命令行为已有完整周期测试，这些额外真实观察不作为逐条人验门槛；未做就如实记录。恢复不能绕过预算。发送 API 的成功回执只证明 Telegram 接受消息，不证明本人已看见或阅读。[Telegram 更新及发送接口](https://core.telegram.org/bots/api)
 6. 基线之后如自然出现通过核实的重大动态，在上海 08:00（含）至 23:00（不含）观察主动通知。若没有符合条件的动态，明确记录该路径未真实发生；不得伪造更新、插入新闻、重置基线或绕开静默时段凑验收。
 7. 功能、凭据和真实闭环就绪后，再明确开启定时变量。记录至少一个实际 `schedule` run 的执行与后续状态延续；一次成功不构成永久在线或准点响应承诺。
 
@@ -82,4 +82,4 @@ node --input-type=module -e 'import {DatabaseSync} from "node:sqlite"; const d =
 
 ## 实际验收记录
 
-待明确进入真实验收后填写：运行与状态 SHA、实际模型及完整 usage、第一轮摘要、新 runner 延续、本人四命令与可见确认、实际 schedule 运行，以及未自然发生的主动新闻／故障路径。当前没有用离线数据填充这些项目。
+待明确进入真实验收后填写必需证据：运行与状态 SHA、实际模型及完整 usage、第一轮摘要、本人真实 `/digest` 的持久回复、新 runner 延续和实际 schedule 运行。另记录 `/status`／`/pause`／`/resume`、本人可见／阅读体验等可选观察是否做过，以及未自然发生的主动新闻／故障路径。当前没有用离线数据填充这些项目。
