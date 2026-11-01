@@ -20,7 +20,7 @@ GitHub Actions 的手动真实运行和无人值守定时运行分别由显式�
 
 ## 关注主题配置
 
-修改根目录的 `watchtower.config.json`。每个主题有唯一 `id` 和描述兴趣的 `description`；支持多个不同领域的主题，不需要通知条件或领域专属字段。默认 AI 主题只是可替换示例。`model` 为 OpenRouter 模型标识，当前按使用者选择设为 `z-ai/glm-5.3-flash`，尚未完成该模型的真实摘要验收。切换模型不构成先前失败的根因证据，也不会清除历史未知费用保护。
+修改根目录的 `watchtower.config.json`。每个主题有唯一 `id` 和描述兴趣的 `description`；支持多个不同领域的主题，不需要通知条件或领域专属字段。默认 AI 主题只是可替换示例。`model` 为 OpenRouter 模型标识，当前按使用者选择设为 `z-ai/glm-5.3-flash`，已有真实 generation 收据、持久摘要及新 runner 的本人 `/digest` 回复确认，见[实际记录](docs/live-acceptance.md)。切换模型不构成先前失败的根因证据，也不会清除历史未知费用保护。
 
 每个完整周期重新读取配置；已保存的运行状态不会覆盖新配置。历史摘要继续保留，新的待处理候选按当前主题判断。
 
@@ -44,7 +44,7 @@ Telegram 提供本人私聊的 `/digest`、`/status`、`/pause` 和 `/resume`。
 
 HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固定本轮上界，回看 48 小时、初始至少 20 分，读取所有可用分页并按帖子 ID 合并；如果服务端结果总数超出可用页面，显式失败，不把截断结果当作完整采集。摘要依据 HN 材料，保存原文与 HN 讨论入口；拟议重大动态还须读取经网络地址校验的原文并核对关键事实，证据不足保留为摘要。正文仅用于当轮内存；待处理 HN 正文可由本轮发现结果或[官方 HN item API](https://github.com/HackerNews/API#items)重新取得。
 
-模型适配器使用 [OpenRouter 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，传入主题和候选，要求通用中文摘要、本地校验候选/主题 ID 和基本中文内容。单次响应不授予工具权限；`provider.requireParameters=true`，输出 token 使用本轮配置（默认 4096），超时 60 秒，传输重试关闭，`allowFinalResponse=false`、`store=false`。这些参数未经过真实付费模型验收。
+模型适配器使用 [OpenRouter 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，传入主题和候选，要求通用中文摘要、本地校验候选/主题 ID 和基本中文内容。单次响应不授予工具权限；`provider.requireParameters=true`，输出 token 使用本轮配置（默认 4096），超时 60 秒，传输重试关闭，`allowFinalResponse=false`、`store=false`。首次真实 GLM generation 与摘要沿用这些参数；完整部署验收仍按运行手册推进。
 
 `usage.costUsd` 允许为空；`costComplete` 说明费用是否完整，费用缺失不能解释为免费。SDK 完整响应后读取累计 usage；传输失败时只携带已收到的允许字段回执并标记不完整，不把原始 SDK 错误写入日志。
 
