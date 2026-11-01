@@ -52,6 +52,12 @@ export function restoreDevelopmentHistory(state: MonitoringState): void {
     candidate.digestSummary ??= state.digest.find(({ candidateId }) => candidateId === candidate.story.id)?.summary;
     candidate.developmentReview = { status: 'pending', comparedRevisionIds: [] };
   }
+  // Repair legacy standalone payloads without resetting failure history or
+  // changing the text already captured by durable overnight deliveries.
+  for (const notification of state.notifications.filter(isDevelopment)) {
+    if (notification.status !== 'pending' || notification.summaryIds?.length || notification.text.length <= 4096) continue;
+    notification.text = notificationText(notification);
+  }
 }
 
 function restoreDigestAssociation(state: MonitoringState, development: DevelopmentRecord, entry: DigestEntry, candidate: StoredCandidate | undefined): void {

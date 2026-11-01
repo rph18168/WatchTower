@@ -188,6 +188,56 @@ test('合并来源过长的日间通知保留完整摘要，未知发送跨 SQLi
   }
 });
 
+test('旧快照的超长待发送通知恢复为完整链接表示，保留永久失败历史且仅在 /resume 后重试', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-legacy-long-notification-'));
+  const path = join(directory, 'state.sqlite');
+  let state = await createSqliteStateStore(path);
+  const sources = [
+    { kind: 'original' as const, url: `https://a.example/${'x'.repeat(1980)}` }, { kind: 'hn' as const, url: first.hnUrl },
+    { kind: 'original' as const, url: `https://b.example/${'x'.repeat(1980)}` }, { kind: 'hn' as const, url: duplicate.hnUrl },
+  ];
+  const failedAttempt = { at: now.toISOString(), status: 'failed' as const, failureCode: 'rejected' as const, permanent: true };
+  const oldText = `${change}\n\n意义：${whyItMatters}\n\n${sources.map(({ kind, url }) => `${kind === 'original' ? '来源' : 'HN 讨论'}：${url}`).join('\n')}`;
+  let resume = false;
+  const received: string[] = [];
+  const sender = createTelegramSender({ botToken: 'test-only', personalChatId: '123', fetch: async (_input, init) => {
+    received.push(JSON.parse(String(init?.body)).text);
+    return Response.json({ ok: true, result: { message_id: received.length, chat: { id: 123, type: 'private' } } });
+  } });
+  const telegram = { ...sender, getUpdates: async () => resume ? [{ updateId: 1, command: 'resume' as const }] : [] };
+  const idle = { loadConfig: async () => config, hn: { discover: async () => [] }, model: { analyze: async () => { throw new Error('已核实通知不需要新模型工作'); } } };
+  try {
+    const snapshot = await state.load();
+    snapshot.digest.push({ id: 'digest:501', candidateId: first.id, title: first.title, summary: change, topicIds: ['mobility'], sources, createdAt: now.toISOString() });
+    snapshot.notifications.push({
+      id: 'notification:501', candidateId: first.id, topicIds: ['mobility'], change, whyItMatters, claims: [], sources,
+      text: oldText, createdAt: now.toISOString(), status: 'pending', sentAt: null, attempts: [failedAttempt],
+    });
+    await state.save(snapshot);
+    state.close();
+    state = await createSqliteStateStore(path);
+    const repaired = await runCycle({ ...idle, state, telegram, clock: () => new Date('2026-11-01T01:15:00.000Z') });
+    assert.ok(repaired.notifications[0]!.text.length <= 4096, 'Restored pending text must fit Telegram before the existing recovery command retries it');
+    assert.equal(received.length, 0);
+    assert.deepEqual(repaired.notifications[0]?.attempts, [failedAttempt]);
+    assert.equal(repaired.notifications[0]?.status, 'pending');
+
+    state.close();
+    state = await createSqliteStateStore(path);
+    resume = true;
+    const recovered = await runCycle({ ...idle, state, telegram, clock: () => new Date('2026-11-01T01:16:00.000Z') });
+    assert.ok(received[0]!.includes(sources[0]!.url));
+    assert.ok(received[0]!.includes(first.hnUrl));
+    assert.equal(recovered.notifications[0]?.status, 'sent');
+    assert.deepEqual(recovered.notifications[0]?.attempts[0], failedAttempt);
+    assert.deepEqual(recovered.notifications[0]?.attempts.map(({ status }) => status), ['failed', 'sent']);
+    assert.deepEqual(recovered.digest[0]?.sources, sources);
+  } finally {
+    state.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('热度上涨不产生模型工作；同一来源 URL 有据的实质更新关联原动态并再次通知', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-development-update-'));
   const path = join(directory, 'state.sqlite');
