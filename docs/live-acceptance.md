@@ -1,6 +1,6 @@
 # 真实部署验收运行手册
 
-本手册提供 T10 的执行顺序和证据边界。当前代码 checkpoint 只完成离线验证，尚未据此声称真实 HN、付费模型、GitHub 状态写入或 Telegram 闭环已通过。实际 run、状态 SHA、费用和本人观察应在执行后追加到本页；不得用示例或绿色 job 代替真实结果。
+本手册提供 T10 的执行顺序和证据边界。已完成离线验证及一次真实 commands 连接检查；2026-11-01 首次 live 因模型处理失败而停在未知费用状态，尚未生成真实摘要，不能认定闭环通过。实际证据见文末记录；不得用示例或绿色 job 代替真实结果。
 
 ## 先固定可复查的版本
 
@@ -82,4 +82,19 @@ node --input-type=module -e 'import {DatabaseSync} from "node:sqlite"; const d =
 
 ## 实际验收记录
 
-待明确进入真实验收后填写必需证据：运行与状态 SHA、实际模型及完整 usage、第一轮摘要、本人真实 `/digest` 的持久回复、新 runner 延续和实际 schedule 运行。另记录 `/status`／`/pause`／`/resume`、本人可见／阅读体验等可选观察是否做过，以及未自然发生的主动新闻／故障路径。当前没有用离线数据填充这些项目。
+### 2026-11-01：连接通过，首次模型工作失败后停止
+
+两轮实际 checkout 均为 `95635e69d4ec8e4b93793714f6f253a22e026221`，Node 24.15.0，使用已固定的 Agent 0.11.0／SDK 0.13.7 及现有配置和预算。配置 Git 文件字节 SHA-256 为 `f2dac12b8c6db1115b096128c0f08cf7fec5b69542a7606ee4bec9494597f699`，lockfile 为 `18006baf1676131f71d26b3119d1725c4b72482a8201ec85ab018a7c88135d98`；这些 hash 不包含 Windows 工作副本的 CRLF 转换。
+
+| 运行 | 实际步骤及结果 | 固定状态快照 |
+| --- | --- | --- |
+| [commands 41279942944](https://github.com/rph18168/WatchTower/actions/runs/41279942944)，attempt 1，06:13:25–06:13:51 UTC | commands 步骤 success；模型 Secret 检查和 paid-cycle 步骤 skipped。Telegram 轮询与 GitHub 状态创建成功；0 候选／摘要／模型调用／消息，未建立新闻基线。 | `ce3f9c60c16616b9838d5a3451f654939ca6859e`；24,576 字节；SHA-256 `57cdfd6b6f449e83e96048fab32e7e26d3a3039e174984e5df4878a943e5a5ef` |
+| [live 41280112629](https://github.com/rph18168/WatchTower/actions/runs/41280112629)，attempt 1，06:15:50–06:16:16 UTC | 完整周期步骤 failure。真实 HN 留存 157 个 pending 候选，0 processed，0 摘要；fault 为 `model-processing`，预算按 `unknown-cost` 停止。 | `a40b4eaec0e30bd7152ae6ad9360a66d9837489a`；118,784 字节；SHA-256 `37c47efa8e5c448894d3bf88a1f716cdc0555c313cba23222f277edfa7e2336d` |
+
+两个固定 SHA 的原始 SQLite 均只读重开，`quick_check=ok`、schema 1；检查未发现非空 HN／来源正文或 quote 字段。第二轮保存的基线截止时间为 `2026-11-01T06:16:01.436Z`，回看始于 `2026-10-30T06:16:01.436Z`，状态仍为 building；最近成功周期仍是第一轮 commands。实际候选示例 ID 为 `50322173`、`50322155`、`50322022`、`50321522`、`50321462`，没有把候选伪称为已生成摘要。
+
+唯一模型账本记录为 `2ccb283d-b872-4b8d-b20f-eb4d68678f06`，开始于 `2026-11-01T06:16:05.854Z`：status `unknown`、costUsd null、costComplete false、输入／输出 token null、无 responseId。请求目标是配置的 `openai/gpt-4.1-mini`，未取得成功 generation 回执，不能确认实际响应模型或实际收费。请求前 06:16:05.726 UTC 的普通 key 元数据显示 remainingUsd 1、usageMonthlyUsd 0；这不能证明后续失败请求免费。
+
+正常的预算状态报告由 Telegram 于 `06:16:12.267Z` 接受，messageId `5`，成功尝试和发送确认已保存。它属于运行状态报告，不是摘要、历史重大新闻或使用者已阅读的证据。当前安全日志只显示模型阶段失败的通用错误，缺少原始 HTTP／SDK 错误类别，尚不能确定传输、provider 或响应格式的具体原因。
+
+本次到此停止，没有再次派发付费 run、重置基线、清空账本或把缺失费用填成零；定时保持关闭。首次真实相关摘要里程碑未达到，真实 `/digest` 摘要闭环、新 runner 的摘要恢复及实际 schedule 运行均待后续完成。有来源的费用核对和最小修复应先于继续模型工作。`/status`／`/pause`／`/resume` 与本人可见／阅读体验等额外真实观察未执行；不据此增加人工逐项验收门槛。
