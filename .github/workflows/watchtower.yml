@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Offline validation or explicitly authorized live cycle'
+        description: 'Offline validation, live cycle, or Telegram commands only'
         type: choice
-        options: [offline, live]
+        options: [offline, live, commands]
         default: offline
         required: true
 
@@ -43,17 +43,11 @@ jobs:
   live:
     if: >-
       (github.event_name == 'schedule' && vars.WATCHTOWER_SCHEDULE_ENABLED == 'true') ||
-      (github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && vars.WATCHTOWER_MANUAL_LIVE_ENABLED == 'true')
+      (github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' || inputs.mode == 'commands') && vars.WATCHTOWER_MANUAL_LIVE_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -63,14 +57,42 @@ jobs:
         with:
           node-version: '24.15.0'
           package-manager-cache: false
-      - name: Check required secrets without displaying values
+      - run: npm ci
+      - run: npm run build
+      - name: Check state and personal Telegram secrets without displaying values
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
         run: |
           node --input-type=module -e '
-            const names = ["GITHUB_TOKEN", "OPENROUTER_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_USER_ID"];
+            const names = ["GITHUB_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_USER_ID"];
             const missing = names.filter(name => !process.env[name]?.trim());
             if (missing.length) { console.error("Missing Actions Secrets: " + missing.join(", ")); process.exit(2); }
           '
-      - run: npm ci
-      - run: npm run build
+      - name: Check model secret without displaying values
+        if: inputs.mode != 'commands'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          node --input-type=module -e '
+            if (!process.env.OPENROUTER_API_KEY?.trim()) { console.error("Missing Actions Secret: OPENROUTER_API_KEY"); process.exit(2); }
+          '
       - name: Execute one complete cycle and await each GitHub snapshot save
+        if: inputs.mode != 'commands'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
         run: npm start -- --allow-paid-model --github-state
+      - name: Process personal Telegram commands from the same persisted state
+        if: inputs.mode == 'commands'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+        run: npm start -- --commands-only --github-state

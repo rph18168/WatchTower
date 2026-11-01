@@ -140,7 +140,9 @@ test('热度上涨不产生模型工作；同一来源 URL 有据的实质更新
     assert.equal(update.digest[0]?.summary, '公共自行车新增五十个站点，让更多居民能够就近使用。');
     assert.equal(developmentNotifications(update)[1]?.developmentId, developmentNotifications(initial)[0]?.developmentId);
     assert.notEqual(developmentNotifications(update)[1]?.revisionId, developmentNotifications(initial)[0]?.revisionId);
-    assert.deepEqual(developmentNotifications(update)[1]?.claims, [{ statement: newChange, sourceId: `source:${updated.id}`, quote: newQuote }]);
+    const claims = developmentNotifications(update)[1]!.claims;
+    assert.deepEqual(claims.map(({ statement, sourceId, quote }) => ({ statement, sourceId, quote })), [{ statement: newChange, sourceId: `source:${updated.id}`, quote: '' }]);
+    assert.match(claims[0]?.evidenceHash ?? '', /^sha256:v1:[0-9a-f]{64}$/);
     assert.equal(update.usage?.costUsd, 0.003);
   } finally {
     state.close();

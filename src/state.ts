@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { MonitoringState, StateStore } from './types.ts';
+import { publicStatePayload } from './state-payload.ts';
 
 /** SQLite is the durable source. Markdown is regenerated from its digest. */
 export function createSqliteStateStore(path: string): StateStore & { close(): void } {
@@ -10,6 +11,7 @@ export function createSqliteStateStore(path: string): StateStore & { close(): vo
   database.exec(`
     PRAGMA journal_mode = DELETE;
     PRAGMA synchronous = FULL;
+    PRAGMA secure_delete = ON;
     CREATE TABLE IF NOT EXISTS candidates (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS digest_entries (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS runtime_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL);
@@ -33,7 +35,7 @@ export function createSqliteStateStore(path: string): StateStore & { close(): vo
       };
     },
     async save(state: MonitoringState) {
-      const { candidates, digest, ...metadata } = state;
+      const { candidates, digest, ...metadata } = publicStatePayload(state);
       database.exec('BEGIN IMMEDIATE');
       try {
         database.exec('DELETE FROM candidates; DELETE FROM digest_entries;');
@@ -51,6 +53,9 @@ export function createSqliteStateStore(path: string): StateStore & { close(): vo
         database.exec('ROLLBACK');
         throw error;
       }
+      // Rebuild the complete file, including legacy free pages, before any
+      // caller can publish it. Field removal alone cannot erase old SQLite bytes.
+      database.exec('VACUUM');
     },
     close() {
       database.close();

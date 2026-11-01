@@ -1,18 +1,26 @@
 # 公有 GitHub Actions 部署与恢复
 
-工作流为 `.github/workflows/watchtower.yml`。定时和手动真实运行均执行同一个 `npm start -- --allow-paid-model --github-state` 完整周期，读取默认分支的代码及 `watchtower.config.json`。不依赖常开主机、runner 缓存、artifact 或旧工作目录恢复状态。
+工作流为 `.github/workflows/watchtower.yml`，读取默认分支代码及 `watchtower.config.json`。定时和手动 `live` 执行同一个 `npm start -- --allow-paid-model --github-state` 完整周期；手动 `commands` 执行现有的 `--commands-only --github-state`，只处理本人命令和相应回复。两者使用同一状态分支、身份校验和串行组。不依赖常开主机、runner 缓存、artifact 或旧工作目录恢复状态。
 
-T03 只完成可控运行和持久化验证。全功能及凭据准备好后，仍须完成规格 #1 / T10 的真实 HN → OpenRouter → SQLite → Telegram 闭环及下一次新 runner 恢复验收。本文不表示已经调用真实写 API、创建状态分支或启用付费运行。
+代码与离线测试不能替代规格 #1 / T10 的真实 HN → OpenRouter → SQLite → Telegram 闭环和新 runner 恢复。按[真实验收运行手册](live-acceptance.md)记录实际运行；本文本身不表示已完成线上验收或启用付费运行。
 
 ## 默认关闭与启用顺序
 
 1. 仓库必须已有正常代码分支，且此工作流位于实际默认分支；不要假定分支名为 `main`。GitHub 不允许在空仓库创建状态 ref。
 2. 修改默认分支上的关注主题及用量配置。准备 Actions Secrets：`OPENROUTER_API_KEY`、`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`、`TELEGRAM_USER_ID`。本人 chat/user 身份也属于秘密，不放在公有配置或数据库中。`GITHUB_TOKEN` 由 Actions 提供；真实运行 job 请求本仓 `contents: write`，不需要长期 PAT 或第二个仓库。仓库或组织策略仍可能拒绝写入。
 3. 保持 repository variables `WATCHTOWER_MANUAL_LIVE_ENABLED` 和 `WATCHTOWER_SCHEDULE_ENABLED` 未设置或设为 `false`。在 Actions 中手动选择 `mode=offline`，只运行完整周期的离线测试、类型检查及构建，不传入业务 Secrets。
-4. **仅在全功能准备好并明确进行 T10 验收时**，将 `WATCHTOWER_MANUAL_LIVE_ENABLED` 设为 `true`，手动选择 `mode=live`。运行前检查必需 Secrets，只报告缺少的名称。真实手动运行还需要明确的 `live` 输入；仅配置 key 不会开启它。完成至少两次真实周期并检查状态延续。
+4. **仅在全功能准备好、代码审查通过且明确进行 T10 验收时**，将 `WATCHTOWER_MANUAL_LIVE_ENABLED` 设为 `true`，手动选择 `mode=live`。首次运行建立基线，不推历史新闻。摘要生成后，本人实际发送 `/digest`，再启动不同的 `mode=commands` run，从远端快照恢复并回复刚保存的摘要，无需新模型调用。手动真实入口都受同一开关保护；仅配置 key 不会开启它。
 5. 验收后如需无人值守运行，再单独将 `WATCHTOWER_SCHEDULE_ENABLED` 设为 `true`。手动开关不会开启定时任务。停用付费自动运行时将定时变量改为 `false`；如需连手动真实运行也禁用，再关闭手动变量。
 
 未设置开关时真实 job 被跳过。工作流中的 cron 声明并不代表当前已开启真实运行。上述开关不是预算控制的替代品；真实任务仍须遵循应用预算和服务方限额。
+
+| 入口 | 允许的工作 | 所需业务 Secrets |
+| --- | --- | --- |
+| 手动 `offline` | 测试、类型检查、构建 | 无 |
+| 手动 `live`／定时 | 完整周期，包括受预算约束的模型工作 | 四项业务 Secrets |
+| 手动 `commands` | 本人四命令、持久保存和命令回复 | 三项 Telegram Secrets；不注入模型 key |
+
+Secrets 仅在检查与执行步骤注入；`npm ci`、构建及离线步骤没有业务 Secrets。所有真实保存使用 Actions 自带的 `GITHUB_TOKEN`，只在相应步骤可用。缺失检查仅输出变量名称，不打印值；名称存在不证明凭据有效、账户有余额或身份配置正确。
 
 ## SQLite 快照契约
 
@@ -20,7 +28,7 @@ T03 只完成可控运行和持久化验证。全功能及凭据准备好后，�
 
 每次 `StateStore.load()` 先读取精确状态 ref 的 commit SHA，再固定该 SHA 下载原始 SQLite 字节。旧的本地工作副本和 journal 不参与恢复。已有快照必须通过 SQLite `quick_check`、包含已提交的运行状态且符合受支持 schema；损坏快照、权限或网络错误均不会退回初始基线。
 
-每次 `StateStore.save()` 先提交本地 SQLite 事务，再等待远端快照提交成功。SQLite 使用 DELETE journal 和 FULL synchronous，上传的是包含已提交事务的完整数据库，而非 WAL 的一部分。数据库不是进程结束时才统一上传；业务的“保存后再发送”和“发送确认再保存”检查点都等待远端持久化。
+每次 `StateStore.save()` 先把公开运营投影提交为本地 SQLite 事务，安全清理并重建文件，再等待远端快照提交成功。SQLite 使用 DELETE journal 和 FULL synchronous，上传的是包含已提交事务的完整数据库，而非 WAL 的一部分。数据库不是进程结束时才统一上传；业务的“保存后再发送”和“发送确认再保存”检查点都等待远端持久化。
 
 更新使用 GitHub GraphQL `createCommitOnBranch`，通过 `expectedHeadOid` 原子检查已加载的分支版本。旧 runner 不能覆盖新 HEAD，也不会合并两个 SQLite 文件。首次初始化遇到另一个写者也不强制覆盖。提交响应不确定时只重新读取并核对完整字节；只有确证远端已有相同快照才确认成功，否则结束本周期。保存失败后，本地未提交副本不再用于保存；下一次完整周期重新读取远端最新状态，不将旧数据库换一个新 SHA 重传。
 
@@ -38,12 +46,14 @@ GitHub 的 schedule 可能延迟或丢弃排队任务，公开仓库长时间无
 
 ## 公开状态、备份与故障恢复
 
-状态分支及完整 Git 历史公开，候选、摘要、用量和运行状态均可能被任何人读取。凭据、本人操作身份和未授权消息内容不得进入 SQLite 或日志。删除新快照中的字段也不会删除历史提交里的内容。
+状态分支及完整 Git 历史公开，候选元数据、简洁摘要、来源定位／hash、验证与归并进度、费用和投递状态可被任何人读取。HN／来源正文和逐字引文不保存在公开快照中，候选指纹与已验证 checkpoint 维持恢复；详见[正文恢复边界](recovery.md#正文与证据的恢复边界)。凭据、本人操作身份和未授权消息内容不得进入 SQLite 或日志。删除新快照中的字段不会删除历史提交里的内容。
 
 快照保存会持续增加 Git 历史；多检查点保存可能在一个周期产生多个提交。适配器只下载最新文件，不需要 clone 整个历史，但这不会消除仓库历史增长。本实现不自动 force push、压缩或重写历史；需要维护时先停止写者并保存可验证备份。
 
 保存失败或版本冲突后，下一次成功周期从最新已提交快照恢复；不要手动合并二进制 SQLite，也不要上传失败 runner 的数据库覆盖新状态。权限失败时检查 Actions 写权限及分支规则；快照缺失或损坏时关闭两个真实运行开关，等待正在执行的任务结束，然后备份当前 HEAD 和一个已知有效的完整快照。备份下载固定 commit SHA，并以原始字节保存，避免文本编码转换；离线打开并执行 SQLite 完整性检查后再使用。
 
 需要恢复旧快照时，在停写期间以当前状态 HEAD 为前置版本追加恢复提交，并先核对恢复点后的模型用量及已发送消息。旧快照可能缺失费用或发送确认；恢复并不能撤销外部调用，也可能导致已约定的重发。保留原 HEAD 便于追查，再以一次手动真实周期验证恢复；不要直接 reset/force 覆盖远端历史。
+
+模型月预算与 GitHub Actions、仓库存储或其他服务收费分别管理。公有仓库的标准托管 runner 当前可免费使用，较大 runner 等仍有独立计费规则；不要把 US$10 模型默认预算当成项目全部费用上限。[GitHub Actions 计费](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
 
 协议依据：[GitHub GraphQL 提交与 expectedHeadOid](https://docs.github.com/en/graphql/reference/commits#createcommitonbranchinput)、[二进制 FileAddition](https://docs.github.com/en/graphql/reference/git#fileaddition)、[Git References](https://docs.github.com/en/rest/git/refs)、[Contents raw 读取](https://docs.github.com/en/rest/repos/contents#get-repository-content)、[调度限制](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)、[并发约束](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency)、[重新启用 workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows#enabling-a-workflow)。

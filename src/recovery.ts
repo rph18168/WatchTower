@@ -22,7 +22,7 @@ export function candidateContentAt(candidate: StoredCandidate): string {
   return candidate.contentUpdatedAt ?? candidate.story.publishedAt;
 }
 
-/** Archiving preserves raw candidates and any completed digest/verification. */
+/** Archiving preserves candidate metadata and any completed digest/verification. */
 export function archiveExpiredCandidates(state: MonitoringState, now: string): void {
   const cutoff = Date.parse(now) - windowMs;
   for (const candidate of state.candidates) {

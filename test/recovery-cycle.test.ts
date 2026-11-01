@@ -15,7 +15,7 @@ const story = (id: string, publishedAt = '2026-11-01T00:00:00.000Z'): CandidateS
   hnUrl: `https://news.ycombinator.com/item?id=${id}`, score: 40, publishedAt,
 });
 
-test('48 小时积压按真实 SDK 请求与输出上限跨周期推进，单个超大正文保留且不饿死小项', async () => {
+test('48 小时积压按真实 SDK 请求与输出上限跨周期推进，单个超大候选可恢复且不饿死小项', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-backlog-'));
   const path = join(directory, 'state.sqlite');
   let state = createSqliteStateStore(path);
@@ -49,11 +49,15 @@ test('48 小时积压按真实 SDK 请求与输出上限跨周期推进，单个
     assert.equal((await state.load()).initialBaseline?.status, 'building');
     for (let cycle = 0; cycle < 3; cycle++) {
       state.close(); state = createSqliteStateStore(path);
-      await runCycle({ loadConfig: async () => ({ ...config, usage: { maxInputBytes: 6000, maxOutputTokens: 256 } }), state, hn: { discover: async () => [] }, model: sdk, clock: () => new Date(at.getTime() + (cycle + 1) * 900_000) });
+      await runCycle({ loadConfig: async () => ({ ...config, usage: { maxInputBytes: 6000, maxOutputTokens: 256 } }), state,
+        hn: { discover: async () => [], readStory: async ({ id }) => [oversized, ...small].find((candidate) => candidate.id === id) ?? null },
+        model: sdk, clock: () => new Date(at.getTime() + (cycle + 1) * 900_000) });
     }
     const durable = await state.load();
     assert.deepEqual(durable.digest.map(({ candidateId }) => candidateId), small.map(({ id }) => id));
-    assert.equal(durable.candidates[0]?.story.text, oversized.text);
+    assert.equal(durable.candidates[0]?.story.text, undefined);
+    assert.equal(durable.candidates[0]?.hasStoryText, true);
+    assert.match(durable.candidates[0]?.contentFingerprint ?? '', /^sha256:v1:[0-9a-f]{64}$/);
     assert.equal(durable.candidates[0]?.status, 'pending');
     assert.equal(requests.length, 4);
     assert.equal(requests.every(({ ids, bytes, output }) => ids.length === 1 && bytes <= 6000 && output === 256), true);
@@ -100,7 +104,7 @@ test('首次基线保存摘要和已核实的已知动态，首次及重启后�
   } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test('预算不足不误标基线完成；跨月恢复只补最近 48 小时，更早原始候选留历史且不伪造摘要', async () => {
+test('预算不足不误标基线完成；跨月恢复只补最近 48 小时，更早候选留历史且不伪造摘要', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-recovery-window-'));
   const path = join(directory, 'state.sqlite');
   let state = createSqliteStateStore(path);
@@ -125,7 +129,10 @@ test('预算不足不误标基线完成；跨月恢复只补最近 48 小时，�
     assert.equal(durable.initialBaseline?.status, 'complete');
     assert.equal(durable.candidates[0]?.status, 'archived');
     assert.equal(durable.candidates[0]?.processedAt, null);
-    assert.deepEqual(durable.candidates[0]?.story, old);
+    const oldMetadata: CandidateStory = { ...old };
+    delete oldMetadata.text;
+    assert.deepEqual(durable.candidates[0]?.story, oldMetadata);
+    assert.match(durable.candidates[0]?.contentFingerprint ?? '', /^sha256:v1:[0-9a-f]{64}$/);
     assert.equal(recovered.status.pendingCandidateCount, 0);
   } finally { state.close(); await rm(directory, { recursive: true, force: true }); }
 });
