@@ -77,6 +77,7 @@ node --input-type=module -e 'import {DatabaseSync} from "node:sqlite"; const d =
 | 静默／晨间汇总、暂停、重试与确认丢失 | `test/notification-window-cycle.test.ts`、`test/notification-retry-cycle.test.ts`、`test/telegram-control-cycle.test.ts` |
 | 基线、48 小时、过期成员与跨 runner 冲突 | `test/recovery-cycle.test.ts`、`test/github-state-cycle.test.ts` |
 | 全文最小保存、字节扫描、已删除页、指纹、已付费 checkpoint 与有界重取 | `test/public-state-cycle.test.ts` |
+| 临时单笔费用维护、provider 前置条件、GitHub CAS、审计白名单 | `test/accounting-reconciliation.test.ts` |
 
 调度可能延迟、排队任务可能被丢弃，公有仓库 60 天无活动可使 schedule 自动停用。检查最近成功周期、Actions run 和固定状态 SHA；按[部署恢复说明](deployment.md#调度与串行边界)核实后重新启用 workflow。模型预算和其他服务费用独立。[GitHub 调度规则](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
 
@@ -95,16 +96,39 @@ node --input-type=module -e 'import {DatabaseSync} from "node:sqlite"; const d =
 
 唯一模型账本记录为 `2ccb283d-b872-4b8d-b20f-eb4d68678f06`，开始于 `2026-11-01T06:16:05.854Z`：status `unknown`、costUsd null、costComplete false、输入／输出 token null、无 responseId。请求目标是配置的 `openai/gpt-4.1-mini`，未取得成功 generation 回执，不能确认实际响应模型或实际收费。请求前 06:16:05.726 UTC 的普通 key 元数据显示 remainingUsd 1、usageMonthlyUsd 0；这不能证明后续失败请求免费。
 
-正常的预算状态报告由 Telegram 于 `06:16:12.267Z` 接受，messageId `5`，成功尝试和发送确认已保存。它属于运行状态报告，不是摘要、历史重大新闻或使用者已阅读的证据。当前安全日志只显示模型阶段失败的通用错误，缺少原始 HTTP／SDK 错误类别，尚不能确定传输、provider 或响应格式的具体原因。
+正常的预算状态报告由 Telegram 于 `06:16:12.267Z` 接受，messageId `5`，成功尝试和发送确认已保存。它属于运行状态报告，不是摘要、历史重大新闻或使用者已阅读的证据。该失败 run 的安全日志只显示模型阶段失败的通用错误，缺少原始 HTTP／SDK 错误类别，尚不能确定传输、provider 或响应格式的具体原因。
 
 本次到此停止，没有再次派发付费 run、重置基线、清空账本或把缺失费用填成零；定时保持关闭。首次真实相关摘要里程碑未达到，真实 `/digest` 摘要闭环、新 runner 的摘要恢复及实际 schedule 运行均待后续完成。有来源的费用核对和最小修复应先于继续模型工作。`/status`／`/pause`／`/resume` 与本人可见／阅读体验等额外真实观察未执行；不据此增加人工逐项验收门槛。
 
-### 临时只读账务检查准备（尚未派发）
+### 2026-11-01：只读账务检查及单次费用归属确认
 
-`.github/workflows/watchtower-accounting.yml` 和 `scripts/openrouter-accounting-check.mjs` 仅为本次 T10 的账务核对准备。独立审查、合并并明确授权后才手动触发；当前没有用它查询真实 key，也没有据此恢复旧账本。完成本次核对后应移除这个临时 workflow／脚本，不扩展为通用诊断平台。
+当前模型 `z-ai/glm-5.3-flash` 的配置已发布于 [7f408d2](https://github.com/rph18168/WatchTower/commit/7f408d26812846f67665847adbc5d71c1e494de3)。安全失败诊断随后在 [a9a0531](https://github.com/rph18168/WatchTower/commit/a9a0531aea05f5991c265a3bef21505a569218d1) 独立合并发布，两轴审查均无 finding，独立离线全测 169/169 通过。这些更改没有补写旧调用的诊断、费用或模型，没有证明首次失败的根因，也没有完成 GLM 的真实摘要验收。
+
+Root 独立执行了唯一一次临时只读查询：[accounting 41283594068](https://github.com/rph18168/WatchTower/actions/runs/41283594068)。实际查询步骤于 `2026-11-01T07:08:53Z` success；输出 `checkedAt=2026-11-01T07:08:53.764Z`、HTTP `200`、`outcome=ok`、`missing=[]`、`invalid=[]`。服务方返回的数值如下，金额单位为 US$：
+
+| 字段 | 实际值 |
+| --- | --- |
+| `usage`、`usage_daily`、`usage_weekly`、`usage_monthly` | 各 `0.0000159` |
+| `byok_usage`、`byok_usage_daily`、`byok_usage_weekly`、`byok_usage_monthly` | 各 `0` |
+| `limit` | `1` |
+| `limit_remaining` | `0.9999841` |
+
+Root 只读核对了同名 `OPENROUTER_API_KEY` 的 GitHub Secret 元数据：`created_at=updated_at=2026-10-31T17:58:44Z`，早于失败请求，之后未更新；没有读取或打印 Secret 值。使用者在 OpenRouter Activity 中未找到该请求，只作为观察记录。使用者随后明确确认：北京时间 14:16–15:09 此 key 只有该次 WatchTower 请求。结合请求前 `usageMonthlyUsd=0`、同 Secret 未更新及此次 `usage_monthly=0.0000159`，该笔费用可按 provider key 月用量差额归为 US$0.0000159。来源是服务方累计增量与 key 所有人独占使用确认，不是旧 SDK 的 generation 收据，不能补造 token、responseId 或成功摘要，也不证明失败根因。
+
+实际持久账本尚未恢复：旧 call `2ccb283d-b872-4b8d-b20f-eb4d68678f06` 仍为 `unknown`、`costUsd=null`、`costComplete=false`，unknown 保护不变。没有再次运行付费模型；仍为 0 摘要，真实闭环未验收，schedule 关闭。临时查询 workflow／脚本本次只读查询后暂保留，完成账务核对后应移除，不扩展为通用诊断平台。
 
 入口只支持 `workflow_dispatch`，没有 schedule、付费模式或任意 URL 输入；使用同一个 `watchtower-state` 串行组和 `contents: read`。只有查询步骤注入普通 `OPENROUTER_API_KEY`，无 Telegram 或状态写入步骤，也无 SDK／模型调用。原生脚本仅对硬编码的 `GET https://openrouter.ai/api/v1/key` 发起一次请求，拒绝重定向，期限 10 秒，不接受参数。
 
 输出 `checkedAt`、固定 outcome／HTTP 状态及数值白名单：`usage`、`usage_daily`、`usage_weekly`、`usage_monthly`、`byok_usage`、`byok_usage_daily`、`byok_usage_weekly`、`byok_usage_monthly`、`limit`、`limit_remaining`。不存在的字段列入 `missing`，无效类型列入 `invalid`；对应值为 null，不能推断为零。BYOK 与其他 usage 分别保留，不自行合并或忽略。不会输出 label、creator、hash、完整 body／headers、key 或原始错误。[OpenRouter 当前 key 元数据接口](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key)
 
-查询显示的是查询时刻的服务方累计元数据，不能单独证明此前某次 unknown 调用费用为零，也不能证明已修复 live 失败。即使与同一 key 的早先用量比较，仍须考虑统计范围、BYOK 和服务方证据；本脚本没有任何恢复账本的能力。新调用的安全失败类别如何读取见[失败诊断](usage-controls.md#失败诊断)。原失败请求缺少这些新字段，根因仍未确定。
+查询显示的是查询时刻的服务方累计元数据，不能单独确定此前某次 unknown 调用的费用，也不能证明已修复 live 失败。本次累计用量明确非零，已结合上述独占使用确认完成归属核对；实际恢复仍须执行下述独立维护。只读查询脚本没有恢复账本的能力。新调用的安全失败类别如何读取见[失败诊断](usage-controls.md#失败诊断)。原失败请求缺少这些新字段，根因仍未确定。
+
+### 临时单笔费用恢复准备（尚未执行）
+
+`watchtower-reconcile.yml`／`src/maintenance-reconcile.ts` 仅用于本次已确认的旧 call，不接受费用、call ID、仓库、分支或 URL 参数。独立合并、审查及明确授权后才手动运行；当前只交付代码，没有修改真实账本。输入只有独立记录的完整 `watchtower-state` SHA 和对上述已记录独占使用事实的确认，确认默认 false。
+
+维护使用同一个 `watchtower-state` 串行组（不取消进行中的任务）与必要的 `contents: write`；安装和构建没有业务 Secret，只有执行步骤注入 `GITHUB_TOKEN`／`OPENROUTER_API_KEY`。它不运行监视周期，不调用模型、HN 或 Telegram，也没有自动重试提交或付费入口。加载与保存均沿用现有 GitHubStateStore、真实 SQLite 和 GitHub expected-head CAS；版本不符或保存冲突不能覆盖较新状态。
+
+执行必须仍在 2026-11-01 UTC 且晚于上述查询时间。它先核对唯一旧 unknown 项的 ID、原 GPT 模型、开始时间、空费用／token／responseId、原调用前 provider 时间和月用量零，再只读重查硬编码的官方 `/api/v1/key`（拒绝重定向、10 秒期限）。四项 `usage*` 必须均为 `0.0000159`，四项 BYOK usage 必须均为 `0`，`limit=1`、`limit_remaining=0.9999841`；字段缺失、无效、数值变化、目标不符、其他未知项或确认缺失时不写远端。此日期范围不是长期费用恢复入口；条件变化应停下重新核对证据。
+
+条件全部满足后，只将目标费用改为 `status=complete`、`costUsd=0.0000159`、`costComplete=true` 并增加有界 `accountingReconciliation` 审计。审计保存方法 `operator-confirmed-exclusive-key-delta`、原 unknown／null 事实、before 0／after 0.0000159、固定来源 run／UTC 时间与维护复核时间；公开投影只保留固定允许字段。原模型、时间、空 token、无 responseId、候选、摘要、基线、控制状态、故障和发送尝试均保留。只在无其他未知项时解除 unknown-cost 暂停，保留手动暂停；维护不计作成功监视周期，也不构成有效 generation 或摘要验收。完成 T10 后移除临时维护 workflow／入口，保留已持久化审计的读取能力。

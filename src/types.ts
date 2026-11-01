@@ -52,6 +52,21 @@ export interface ModelCallRecord extends ModelCallReceipt {
   id: string;
   startedAt: string;
   status: 'in-flight' | 'complete' | 'unknown';
+  accountingReconciliation?: ModelCallAccountingReconciliation;
+}
+
+/** T10's one authorized key-delta reconciliation; never an SDK generation receipt. */
+export interface ModelCallAccountingReconciliation {
+  method: 'operator-confirmed-exclusive-key-delta';
+  reconciledAt: string;
+  originalStatus: 'unknown';
+  originalCostUsd: null;
+  exclusiveKeyUseConfirmed: true;
+  beforeCheckedAt: '2026-11-01T06:16:05.726Z';
+  beforeUsageMonthlyUsd: 0;
+  sourceQueryRunId: '41283594068';
+  sourceQueryCheckedAt: '2026-11-01T07:08:53.764Z';
+  afterUsageMonthlyUsd: 0.0000159;
 }
 
 export interface ModelBudgetStatus {

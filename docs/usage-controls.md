@@ -56,4 +56,4 @@
 
 不持有或调用管理密钥。[`GET /api/v1/credits`](https://openrouter.ai/docs/api/api-reference/credits/get-remaining-credits) 需要管理密钥，因此不属于本程序的额度查询路径。所有自动化前仍需 T10 的真实闭环验收；离线 SSE/SQLite 测试不是付费服务的线上验收。
 
-临时只读账务 workflow 的范围及证据限制见[真实验收手册](live-acceptance.md#临时只读账务检查准备尚未派发)。它另行报告 `usage*` 和 `byok_usage*`，不改 SQLite 或旧调用账本。
+临时只读账务 workflow 与本次单笔费用维护的范围见[真实验收手册](live-acceptance.md)。查询另行报告 `usage*` 和 `byok_usage*`，不改 SQLite。已确认的旧调用费用来自 provider key 月用量差额与 key 所有人独占使用确认；维护入口尚未执行，不是旧 SDK generation 收据或通用解锁入口。核账后保留的 `accountingReconciliation` 审计也不补造 token、responseId、摘要或失败根因。

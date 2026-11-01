@@ -1,8 +1,26 @@
 import { createHash } from 'node:crypto';
-import type { CandidateStory, DevelopmentVerification, MonitoringState, SourceEvidence, StoredCandidate, VerifiedEvidenceCheckpoint } from './types.ts';
+import type { CandidateStory, DevelopmentVerification, ModelCallAccountingReconciliation, ModelCallRecord, MonitoringState, SourceEvidence, StoredCandidate, VerifiedEvidenceCheckpoint } from './types.ts';
 import { safeModelDiagnostic } from './model-diagnostics.ts';
 
 const hashPattern = /^sha256:v1:[0-9a-f]{64}$/;
+
+/** Only the fixed T10 fee evidence, never arbitrary provider/account metadata. */
+function safeAccountingReconciliation(call: ModelCallRecord): ModelCallAccountingReconciliation | undefined {
+  const value = call.accountingReconciliation;
+  if (!value || call.id !== '2ccb283d-b872-4b8d-b20f-eb4d68678f06' || call.startedAt !== '2026-11-01T06:16:05.854Z' ||
+      call.model !== 'openai/gpt-4.1-mini' || call.status !== 'complete' || call.costUsd !== 0.0000159 || call.costComplete !== true ||
+      value.method !== 'operator-confirmed-exclusive-key-delta' || value.originalStatus !== 'unknown' || value.originalCostUsd !== null || value.exclusiveKeyUseConfirmed !== true ||
+      value.beforeCheckedAt !== '2026-11-01T06:16:05.726Z' || value.beforeUsageMonthlyUsd !== 0 ||
+      value.sourceQueryRunId !== '41283594068' || value.sourceQueryCheckedAt !== '2026-11-01T07:08:53.764Z' || value.afterUsageMonthlyUsd !== 0.0000159 ||
+      typeof value.reconciledAt !== 'string' || value.reconciledAt.slice(0, 10) !== '2026-11-01' || value.reconciledAt < value.sourceQueryCheckedAt ||
+      !Number.isFinite(Date.parse(value.reconciledAt)) || new Date(value.reconciledAt).toISOString() !== value.reconciledAt) return undefined;
+  return {
+    method: 'operator-confirmed-exclusive-key-delta', reconciledAt: value.reconciledAt,
+    originalStatus: 'unknown', originalCostUsd: null, exclusiveKeyUseConfirmed: true,
+    beforeCheckedAt: '2026-11-01T06:16:05.726Z', beforeUsageMonthlyUsd: 0,
+    sourceQueryRunId: '41283594068', sourceQueryCheckedAt: '2026-11-01T07:08:53.764Z', afterUsageMonthlyUsd: 0.0000159,
+  };
+}
 
 function hash(value: string): string {
   return `sha256:v1:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
@@ -98,6 +116,9 @@ export function publicStatePayload(state: MonitoringState): MonitoringState {
     const diagnostic = safeModelDiagnostic(call.diagnostic);
     if (diagnostic) call.diagnostic = diagnostic;
     else delete call.diagnostic;
+    const reconciliation = safeAccountingReconciliation(call);
+    if (reconciliation) call.accountingReconciliation = reconciliation;
+    else delete call.accountingReconciliation;
   }
   for (const candidate of snapshot.candidates) {
     candidate.contentFingerprint ??= candidateFingerprint(candidate.story);
