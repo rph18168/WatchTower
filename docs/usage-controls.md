@@ -35,8 +35,25 @@
 
 未知费用不当作零：部分已知费用继续计入，缺失部分标为 `unknown`。超时或 runner 中断留下的 `in-flight` 也阻止后续请求。月界和上调预算都不清除这些记录。当前版不自动补查 generation 费用；维护者须先核对 provider 用量证据，再恢复完整记录，不能将缺失费用直接填成零来解锁。
 
+## 失败诊断
+
+新失败调用可在 `budget.calls[].diagnostic` 中保存安全上下文。它只增加可辨别的信息，不改变准入、费用或重试规则；旧记录缺少此字段时不会补造历史诊断。
+
+| stage | 含义 |
+| --- | --- |
+| `request` | SDK 请求准备或开始阶段失败，尚未观察到 HTTP 响应。 |
+| `transport` | fetch 已进入并抛出异常，没有返回 HTTP 响应。 |
+| `http` | 已收到非成功 HTTP 状态；`httpStatus` 为观察到的数字。 |
+| `response` | 收到响应后，流、JSON、结构校验或完成处理失败。 |
+
+`errorClass` 只使用固定类别：`RequestError`、`UnknownError`、`TypeError`、`SyntaxError`、`AbortError`、`TimeoutError`、`HttpError`、`ResponseError`、`ValidationError`。原生类别按实际类型识别，不复制任意 `error.name`。可选的 `transportCode` 也仅允许固定网络 code。`requestId` 只接受指定响应头中的严格 UUID，`generationId` 只接受已识别的 `gen-…` 格式；无法识别或不存在就省略，不生成 ID。不保存 message、响应正文、完整 headers、prompt、token 或身份。
+
+诊断与收费完整性分别判断：没有完整回执的 HTTP／连接／解析失败仍保持 unknown 并阻止下一次付费请求；已完成收费后结构校验失败则保留原费用及 token。现有 402/429 明确拒绝回执的处理保持原样。状态码或错误类别本身不能作为把旧未知费用填零的依据。
+
 ## Provider 额度
 
 运行时使用普通推理 key 只读查询 [`GET /api/v1/key`](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key)，读取月用量、key 剩余额度，以及响应中可用的 `budgets` 和 `effective_budget`。多个限制取最小值。查询返回未配置 key cap，并不证明账户资金无限；实际拒绝仍停止模型请求。上调应用配置不会修改 provider 限额。
 
 不持有或调用管理密钥。[`GET /api/v1/credits`](https://openrouter.ai/docs/api/api-reference/credits/get-remaining-credits) 需要管理密钥，因此不属于本程序的额度查询路径。所有自动化前仍需 T10 的真实闭环验收；离线 SSE/SQLite 测试不是付费服务的线上验收。
+
+临时只读账务 workflow 的范围及证据限制见[真实验收手册](live-acceptance.md#临时只读账务检查准备尚未派发)。它另行报告 `usage*` 和 `byok_usage*`，不改 SQLite 或旧调用账本。

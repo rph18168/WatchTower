@@ -98,3 +98,13 @@ node --input-type=module -e 'import {DatabaseSync} from "node:sqlite"; const d =
 正常的预算状态报告由 Telegram 于 `06:16:12.267Z` 接受，messageId `5`，成功尝试和发送确认已保存。它属于运行状态报告，不是摘要、历史重大新闻或使用者已阅读的证据。当前安全日志只显示模型阶段失败的通用错误，缺少原始 HTTP／SDK 错误类别，尚不能确定传输、provider 或响应格式的具体原因。
 
 本次到此停止，没有再次派发付费 run、重置基线、清空账本或把缺失费用填成零；定时保持关闭。首次真实相关摘要里程碑未达到，真实 `/digest` 摘要闭环、新 runner 的摘要恢复及实际 schedule 运行均待后续完成。有来源的费用核对和最小修复应先于继续模型工作。`/status`／`/pause`／`/resume` 与本人可见／阅读体验等额外真实观察未执行；不据此增加人工逐项验收门槛。
+
+### 临时只读账务检查准备（尚未派发）
+
+`.github/workflows/watchtower-accounting.yml` 和 `scripts/openrouter-accounting-check.mjs` 仅为本次 T10 的账务核对准备。独立审查、合并并明确授权后才手动触发；当前没有用它查询真实 key，也没有据此恢复旧账本。完成本次核对后应移除这个临时 workflow／脚本，不扩展为通用诊断平台。
+
+入口只支持 `workflow_dispatch`，没有 schedule、付费模式或任意 URL 输入；使用同一个 `watchtower-state` 串行组和 `contents: read`。只有查询步骤注入普通 `OPENROUTER_API_KEY`，无 Telegram 或状态写入步骤，也无 SDK／模型调用。原生脚本仅对硬编码的 `GET https://openrouter.ai/api/v1/key` 发起一次请求，拒绝重定向，期限 10 秒，不接受参数。
+
+输出 `checkedAt`、固定 outcome／HTTP 状态及数值白名单：`usage`、`usage_daily`、`usage_weekly`、`usage_monthly`、`byok_usage`、`byok_usage_daily`、`byok_usage_weekly`、`byok_usage_monthly`、`limit`、`limit_remaining`。不存在的字段列入 `missing`，无效类型列入 `invalid`；对应值为 null，不能推断为零。BYOK 与其他 usage 分别保留，不自行合并或忽略。不会输出 label、creator、hash、完整 body／headers、key 或原始错误。[OpenRouter 当前 key 元数据接口](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key)
+
+查询显示的是查询时刻的服务方累计元数据，不能单独证明此前某次 unknown 调用费用为零，也不能证明已修复 live 失败。即使与同一 key 的早先用量比较，仍须考虑统计范围、BYOK 和服务方证据；本脚本没有任何恢复账本的能力。新调用的安全失败类别如何读取见[失败诊断](usage-controls.md#失败诊断)。原失败请求缺少这些新字段，根因仍未确定。
