@@ -2,9 +2,9 @@
 
 按可配置的关注主题读取 Hacker News 候选帖子，将相关内容整理成中文摘要并保存到 SQLite。Markdown 是从已保存摘要生成的阅读副本。
 
-当前代码包括候选采集、摘要、来源核实、动态归并、Telegram 本人控制、用量预算、静默时段、投递重试和近期恢复。主要业务均通过完整周期与真实 SQLite 离线验证；[T10 / #11](https://github.com/rph18168/WatchTower/issues/11) 的真实部署验收仍须按[验收运行手册](docs/live-acceptance.md)完成并留下实际证据。
+当前代码包括候选采集、摘要、来源核实、动态归并、Telegram 本人控制、用量预算、静默时段、投递重试和近期恢复。主要业务均通过完整周期与真实 SQLite 离线验证；[T10 / #11](https://github.com/rph18168/WatchTower/issues/11) 的真实部署验收已通过，版本、收据与恢复证据见[验收运行手册](docs/live-acceptance.md)。
 
-GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，未配置时均关闭。本仓在 2026-11-01 已完成真实 GLM 摘要与新 runner 的本人 `/digest` 回复；维护者于 `08:09:35.371Z` 开启定时变量，手动、定时开关均保持 true。至 `09:10:50Z` 的只读检查，开启约一小时仍未观测到新的自然 schedule，原因未确定，规格 #1／T10 #11 的定时验收仍未完成。手动入口还有仅处理本人 Telegram 命令的 `commands` 模式，可在新 runner 中查询持久摘要而不调用模型。约 15 分钟调度采用 best effort；部署、调度限制、状态备份及恢复见[部署说明](docs/deployment.md)。
+GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，未配置时均关闭。本仓在 2026-11-01 已完成真实 GLM 摘要与新 runner 的本人 `/digest` 回复；维护者于 `08:09:35.371Z` 开启定时变量，随后自然 [schedule 41313205828](https://github.com/rph18168/WatchTower/actions/runs/41313205828) 的完整周期于 `13:51:12Z` 成功完成。手动、定时开关均保持 true；先前未产生自然事件的原因仍未确定。手动入口还有仅处理本人 Telegram 命令的 `commands` 模式，可在新 runner 中查询持久摘要而不调用模型。约 15 分钟调度采用 best effort；部署、调度限制、状态备份及恢复见[部署说明](docs/deployment.md)。
 
 ## 环境与验证
 
@@ -44,7 +44,7 @@ Telegram 提供本人私聊的 `/digest`、`/status`、`/pause` 和 `/resume`。
 
 HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固定本轮上界，回看 48 小时、初始至少 20 分，读取所有可用分页并按帖子 ID 合并；如果服务端结果总数超出可用页面，显式失败，不把截断结果当作完整采集。摘要依据 HN 材料，保存原文与 HN 讨论入口；拟议重大动态还须读取经网络地址校验的原文并核对关键事实，证据不足保留为摘要。正文仅用于当轮内存；待处理 HN 正文可由本轮发现结果或[官方 HN item API](https://github.com/HackerNews/API#items)重新取得。
 
-模型适配器使用 [OpenRouter 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，传入主题和候选，要求通用中文摘要、本地校验候选/主题 ID 和基本中文内容。单次响应不授予工具权限；`provider.requireParameters=true`，输出 token 使用本轮配置（默认 4096），超时 60 秒，传输重试关闭，`allowFinalResponse=false`、`store=false`。首次真实 GLM generation 与摘要沿用这些参数；完整部署验收仍按运行手册推进。
+模型适配器使用 [OpenRouter 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，传入主题和候选，要求通用中文摘要、本地校验候选/主题 ID 和基本中文内容。单次响应不授予工具权限；`provider.requireParameters=true`，输出 token 使用本轮配置（默认 4096），超时 60 秒，传输重试关闭，`allowFinalResponse=false`、`store=false`。真实 GLM 手动和定时周期均沿用这些参数，实际收据见[验收记录](docs/live-acceptance.md)。
 
 `usage.costUsd` 允许为空；`costComplete` 说明费用是否完整，费用缺失不能解释为免费。SDK 完整响应后读取累计 usage；传输失败时只携带已收到的允许字段回执并标记不完整，不把原始 SDK 错误写入日志。
 

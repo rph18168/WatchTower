@@ -1,6 +1,6 @@
 # 真实部署验收运行手册
 
-本手册提供 T10 的执行顺序和证据边界。已完成离线验证、真实 commands 连接检查、旧调用费用核账、GLM 真实摘要持久化，以及本人真实 `/digest` 在新 runner 中的恢复和发送确认。2026-11-01 首次 live 的失败证据保留；维护者于 `08:09:35.371Z` 开启 schedule，至 `09:10:50Z` 的检查仍未观测到新自然运行，规格 #1／T10 #11 及定时验收未完成。实际证据见文末记录；不得用示例或绿色 job 代替真实结果。
+本手册提供 T10 的执行顺序和证据边界。已完成离线验证、真实 commands 连接检查、旧调用费用核账、GLM 真实摘要持久化，以及本人真实 `/digest` 在新 runner 中的恢复和发送确认。2026-11-01 自然 `schedule` 的完整周期于 `13:51:12Z` 成功执行，固定快照延续核验通过，T10 真实部署验收已完成。首次 live 的失败、启用初期等待和平台检查均按时间保留在下方记录中；不得用示例或绿色 job 代替真实结果。
 
 ## 先固定可复查的版本
 
@@ -171,3 +171,27 @@ run 创建于 `07:56:31Z`，`07:56:59Z` 状态 completed/success。checkout 日�
 后续仅记录已确认开关状态的文档提交已独立发布为 `f5338045f353078a3c6ddb114c79d1263ec75f75`，业务代码与配置不变。本轮只读观察覆盖到 `2026-11-01T09:10:50Z`；最后一次 REST 查询开始于 `09:10:34Z`、完成于 `09:10:50Z`，返回 schedule `total_count=3`、新事件为空。最新仍为 [41281990877](https://github.com/rph18168/WatchTower/actions/runs/41281990877)，创建 `06:43:52Z`、completed/skipped、代码 `3e6cb0deab853416665f75cdb2ae4148c58d7d1a`，早于开关启用，不能算作本次实际定时执行。Root 在 `09:10:33Z` 独立得到相同列表，状态 HEAD 仍为 `b0d70156a47a2b91844f8daf3baf61d992f82b1b`；此前核验的三笔费用、旧审计、两份摘要和 messageId `7` 仍位于同一不可变快照。
 
 此前约 `08:49Z` 的 Root 只读检查确认主 workflow `402950575` active、默认分支正确、cron `7,22,37,52 * * * *` 有效，仓库未归档／禁用，当时最新 20 个 run 没有未完成项。仍未确定为何没有新自然事件，不能据此诊断为本地故障；GitHub 允许调度延迟或丢弃，约 15 分钟是目标而非保证。两个运行开关保留 true，未执行手工 dispatch／rerun、控制修改、基线重置或费用改写。独立代码与手动真实链路已准备好，剩余的实际 schedule 运行、收据及后续快照仍等待外部事件；规格 #1、T10 #11 与这项验收均未标完成。未自然发生的主动重大动态仍不宣称已实测，也不新增本人阅读／四命令确认门槛。
+
+### 2026-11-01：等待期间的离线对照与平台检查
+
+等待期间仅派发一次现有离线对照 [41302940745](https://github.com/rph18168/WatchTower/actions/runs/41302940745)，`workflow_dispatch`，实际 offline job 于 `11:40:43–11:41:05Z` success，checkout 日志确认为 `1a2c5a50ac38babe9635e1d22348c4020e93affb`。165/165 测试、typecheck 和 build 实际通过，live job skipped，无业务 Secrets、模型调用或状态写入，状态仍为 `b0d70156a47a2b91844f8daf3baf61d992f82b1b`。该对照证明手动执行及 runner 可用，不能替代自然定时验收或排除 schedule 专属限制。
+
+截至 `12:35:49Z` 的成功只读查询仍只有三个旧 schedule，未观察到启用后的新事件。平台核查曾遇到不同时期的网页缓存，随后 `11:51–11:52Z` 直接 GET 并核对 HTTP 时间：[状态汇总](https://www.githubstatus.com/api/v2/summary.json)报告 Actions operational、无活跃事故，[最近 50 项事故](https://www.githubstatus.com/api/v2/incidents.json)没有 10 月 31 日以来新建事故；最近相关的[10 月 30 日事故](https://www.githubstatus.com/incidents/pwxsjgnvrk6b)已于当日 `19:23Z` 解决，不覆盖本次窗口。这些是当时的公开报告，不能排除未公开或特定 workflow 的平台问题，也没有确定本次未创建事件的根因。观察期间没有改 cron、切换 workflow、重置状态或追加付费人工运行。
+
+### 2026-11-01：自然 schedule 执行完整周期
+
+自然 [schedule 41313205828](https://github.com/rph18168/WatchTower/actions/runs/41313205828)，attempt 1、`event=schedule`，于 `13:50:31Z` 创建；[live job 124867723674](https://github.com/rph18168/WatchTower/actions/runs/41313205828/job/124867723674) 于 `13:50:34–13:51:14Z` completed/success，完整周期步骤 `13:50:44–13:51:12Z` success，commands 步骤和 offline job skipped。checkout 日志 `13:50:38.2199433Z` 确认实际执行 `1a2c5a50ac38babe9635e1d22348c4020e93affb`，不是仅凭 run 的 headSha 判断。Node 24.15.0、SDK／依赖及调用参数沿用上述固定版本；配置 SHA-256 仍为 `2d8773329378be0e422953919a2a586b6972d01a71fc33826f31d132c69feac5`，lockfile 仍为 `18006baf1676131f71d26b3119d1725c4b72482a8201ec85ab018a7c88135d98`。
+
+| 本地 call ID／开始 UTC | 实际 generation ID | 实际模型 | costUsd／costComplete | 输入／输出 token |
+| --- | --- | --- | --- | --- |
+| `3c673216-667b-43ae-b9bc-410d29cdf7b8`／`13:50:50.349Z` | `gen-1793541051-MTefxkw6ee6ycBGbClNJ` | `z-ai/glm-5.3-flash` | `0.000123916`／true | 739／457 |
+| `a9c252f7-9bba-437d-9ff6-62de78c7c20d`／`13:50:57.421Z` | `gen-1793541058-ZiNS8J8b2wuswqOmhumD` | `z-ai/glm-5.3-flash` | `0.000175832`／true | 779／262 |
+| `0755b4db-75d3-4aa4-85f4-a148a7585b93`／`13:51:04.521Z` | `gen-1793541066-pXdhtbjaweEIXVstvqAH` | `z-ai/glm-5.3-flash` | `0.00005154`／true | 998／135 |
+
+三笔均为 complete，本轮实际合计 US$0.000351288，输入／输出 2516／854 token、三步；当月已知费用 US$0.001484674，pauseReason null、fault null。固定状态为 [9401920](https://github.com/rph18168/WatchTower/commit/940192017914499994882c911f83781c7278bbc7)，blob `011bad1cd44871e3fffdcf354534532284a62452`，143,360 字节，原始 SQLite SHA-256 `3f3ca7a41453bc8a18b13fd42cbfbdc1e2686aa58a9305cd158424ff49df3815`；只读重开 `quick_check=ok`、schema 1。公开字段检查与原始字节扫描未发现非空正文／quote、敏感字段或凭据标记。
+
+Root 对运行前 `b0d70156a47a2b91844f8daf3baf61d992f82b1b` 与上述固定快照独立比较：GitHub compare 为 ahead 11、behind 0，base 和 merge-base 均为 `b0d7015…`，head 为 `9401920…`。全部 160 个旧候选 ID 保留，新增 16 个；两份旧摘要、三笔旧模型账本（含 GPT 费用核账审计）以及两条旧通知和全部发送尝试逐项相同。原 `/digest` 回复仍是 messageId `7`、同一成功尝试与正文 hash；没有新发送、重复回复或历史新闻补发。新增 18 个归档候选均已超出 48 小时窗口。
+
+快照保存四份摘要，新增 `digest:50321065` 与 `digest:50320995`；新增两份均保留来源正文未完整核实、暂不主动通知的说明。共有 176 个候选：143 pending、10 processed、23 archived；基线与原 `2026-10-30T06:16:01.436Z` 至 `2026-11-01T06:16:01.436Z` 完全相同，仍为 building，没有宣称全部积压已处理。
+
+至此，T10 要求的真实闭环、跨 runner 恢复及无人值守自然执行验收已通过。本次没有改 cron、重置开关／状态／基线或绕过预算来制造自然事件，先前长时间未产生事件的具体原因仍未确定。两个运行开关保持 true；一次自然成功不保证准点或永久在线。主动重大动态尚未自然发生，本人可见／阅读体验及额外三命令的真实观察也未执行；相关组合由上述可控测试覆盖，不新增人工逐项验收门槛。
