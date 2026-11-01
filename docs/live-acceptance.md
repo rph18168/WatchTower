@@ -1,10 +1,10 @@
 # 真实部署验收运行手册
 
-本手册提供 T10 的执行顺序和证据边界。已完成离线验证、真实 commands 连接检查、旧调用费用核账及一次 GLM 真实摘要持久化。2026-11-01 首次 live 的失败证据保留；真实 `/digest` 回复、新 runner 摘要恢复及 schedule 运行仍待完成，尚不能认定全部闭环通过。实际证据见文末记录；不得用示例或绿色 job 代替真实结果。
+本手册提供 T10 的执行顺序和证据边界。已完成离线验证、真实 commands 连接检查、旧调用费用核账、GLM 真实摘要持久化，以及本人真实 `/digest` 在新 runner 中的恢复和发送确认。2026-11-01 首次 live 的失败证据保留；schedule 运行仍待完成，尚不能认定全部验收通过。实际证据见文末记录；不得用示例或绿色 job 代替真实结果。
 
 ## 先固定可复查的版本
 
-确认 T01–T09 已整合、完整回归和代码审查通过，记录实际默认分支及最终执行的 checkout SHA、配置文件与 lockfile SHA-256。安装环境固定为 Node 24.15.0；依赖版本见 [README](../README.md#环境与验证)。当前模型已按使用者选择改为 `z-ai/glm-5.3-flash`，已取得真实 generation 收据和持久摘要，详见文末；真实命令回复与新 runner 摘要恢复仍待验收。首次失败的历史请求目标仍为 `openai/gpt-4.1-mini`；换模型不证明旧失败的根因，旧费用另按有来源的核账记录处理。
+确认 T01–T09 已整合、完整回归和代码审查通过，记录实际默认分支及最终执行的 checkout SHA、配置文件与 lockfile SHA-256。安装环境固定为 Node 24.15.0；依赖版本见 [README](../README.md#环境与验证)。当前模型已按使用者选择改为 `z-ai/glm-5.3-flash`，已取得真实 generation 收据、持久摘要和新 runner 的真实 `/digest` 回复确认，详见文末。首次失败的历史请求目标仍为 `openai/gpt-4.1-mini`；换模型不证明旧失败的根因，旧费用另按有来源的核账记录处理。
 
 已实现的请求参数为严格 JSON Schema、`provider.requireParameters=true`、`store=false`、`allowFinalResponse=false`、传输重试关闭、60 秒请求期限，以及当前 `usage.maxInputBytes`／`maxOutputTokens`／费用／步数限制。摘要、来源核实和身份比较共享预算。默认月预算 US$10、单轮 US$0.25、六步、64,000 输入字节和 4096 输出 token；这些是停止阈值，不能承诺最终账单绝不超过阈值。
 
@@ -150,4 +150,16 @@ Root 对 `a40b4ea…` 与 `29818f9…` 的完整逻辑状态逐项比较，确�
 
 同一固定快照保存了两份相关摘要：`digest:50322173`（提示注入诉讼文书，来源 [HN 50322173](https://news.ycombinator.com/item?id=50322173)／[原文入口](https://jetstream.security/insights/brazilian-court-sanctions-prompt-injection-filing/)）和 `digest:50321522`（BBRouter 与 MCP 电路助手，来源 [HN 50321522](https://news.ycombinator.com/item?id=50321522)／[原文入口](https://bbrouter.com/bbrouter/ben-eater-sap-1)）。两份均保留“来源正文未能完整核实，暂不主动通知”的说明；这里记录的是模型保存的摘要及来源入口，不宣称已核实来源全文。
 
-快照共有 160 个候选：151 pending、5 processed、4 archived。原基线仍从 `2026-10-30T06:16:01.436Z` 至 `2026-11-01T06:16:01.436Z`、building，没有重置或把历史新闻主动推送。没有新增发送，唯一已有消息仍为预算报告 messageId `5`。首份真实相关摘要里程碑达到后停止启动新 run；真实 `/digest` 回复与第二个新 runner 的摘要恢复尚待独立授权，schedule 仍关闭，也没有宣称使用者已阅读或主动重大动态路径已真实发生。
+快照共有 160 个候选：151 pending、5 processed、4 archived。原基线仍从 `2026-10-30T06:16:01.436Z` 至 `2026-11-01T06:16:01.436Z`、building，没有重置或把历史新闻主动推送。该轮没有新增发送，唯一已有消息仍为预算报告 messageId `5`。首份真实相关摘要里程碑达到后停止启动新 run，直至本人真实发出 `/digest` 并获得下面的独立 commands 授权；schedule 仍关闭，也没有宣称使用者已阅读或主动重大动态路径已真实发生。
+
+### 2026-11-01：本人真实 `/digest` 在第二个新 runner 回复并保存确认
+
+使用者明确报告已真实发送 `/digest` 后，单独授权并仅启动一次 [commands 41286765734](https://github.com/rph18168/WatchTower/actions/runs/41286765734)，attempt 1，`workflow_dispatch`。派发前独立读取的默认分支仍为 `ca43971623307c0cff51593498ad32b04de429e6`，状态 HEAD 为 `bd8f995af0dc709920abe88c9232d45de3cafae1`；当时本地尚未发布的清理提交不参与本次运行。
+
+run 创建于 `07:56:31Z`，`07:56:59Z` 状态 completed/success。checkout 日志 `07:56:38.5945664Z` 确认实际代码仍为 `ca43971623307c0cff51593498ad32b04de429e6`。commands 步骤 `07:56:45–07:56:56Z` success；model Secret 检查与 paid-cycle 步骤均 skipped。执行步显式注入的 Secret 只有 `GITHUB_TOKEN` 和三个 Telegram Secret，没有 `OPENROUTER_API_KEY`；本轮 `usage=null`、`steps=0`、`runSpentUsd=0`，没有模型请求。
+
+固定状态 [b0d7015](https://github.com/rph18168/WatchTower/commit/b0d70156a47a2b91844f8daf3baf61d992f82b1b)，blob `5976c7e1ad71ed8648e219b9cfac09163e7b2225`，126,976 字节，SHA-256 `9ddb4a94fa5cc7b3fcb3e72cfff0ea924e22b3324d56aed26fa04ebd1381e4ca`；只读 `quick_check=ok`、schema 1，无非空原始正文／quote 字段。GitHub compare 确认它位于 `bd8f995…` 之后六个提交，base 和 merge-base 均为 `bd8f995af0dc709920abe88c9232d45de3cafae1`，证明延续同一快照链。
+
+真实 command-reply 于 `2026-11-01T07:56:54.091Z` 被 Telegram 接受，`messageId=7`、`status=sent`；成功 attempt、sentAt 和 messageId 已保存在同一 SQLite。回复正文 SHA-256 为 `b1d85b0c880fdd8faa018132b66aae380390fdc395c1eedbf3bcfbc5fa489a28`，以 `# WatchTower 摘要` 开头；`digest:50322173` 与 `digest:50321522` 的标题、摘要全文、原文及 HN 链接均逐项匹配。未使用合成 update，也未发送额外测试报告。API 成功回执证明 Telegram 接受，不代表本人已读。
+
+前后比较确认三笔原费用及 GPT 审计、两份摘要、原基线和旧预算通知完全相同，160 个候选 ID 全部保留。候选 `50300902` 发布于 `2026-10-30T07:48:40Z`，本轮于 `2026-11-01T07:56:46.097Z` 超过 48 小时窗口后由 pending 转 archived，仅增加归档时间；因此状态为 150 pending、5 processed、5 archived，并未丢失候选或重新采集。本人真实查询、独立新 runner、原摘要恢复和持久发送确认链路已通过；schedule 仍关闭，实际定时运行及未自然发生的主动重大动态路径尚无真实证据。
