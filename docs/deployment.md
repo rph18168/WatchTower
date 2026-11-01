@@ -2,7 +2,9 @@
 
 工作流为 `.github/workflows/watchtower.yml`，读取默认分支代码及 `watchtower.config.json`。定时和手动 `live` 执行同一个 `npm start -- --allow-paid-model --github-state` 完整周期；手动 `commands` 执行现有的 `--commands-only --github-state`，只处理本人命令和相应回复。两者使用同一状态分支、身份校验和串行组。不依赖常开主机、runner 缓存、artifact 或旧工作目录恢复状态。
 
-代码与离线测试不能替代规格 #1 / T10 的真实 HN → OpenRouter → SQLite → Telegram 闭环和新 runner 恢复。按[真实验收运行手册](live-acceptance.md)记录实际运行；本文本身不表示已完成线上验收或启用付费运行。
+本仓已于 2026-11-01 完成真实 HN → GLM → SQLite 摘要及下一独立 runner 的本人 `/digest` 回复确认。旧失败请求的费用按 provider key 增量与使用者独占使用确认核清，历史审计保留；临时账务查询与维护入口已移除。实际收据、快照与尚未自然发生的路径见[真实验收运行手册](live-acceptance.md)。
+
+截至 `2026-11-01T08:09:35.371Z`，维护者已开启 `WATCHTOWER_SCHEDULE_ENABLED=true`，`WATCHTOWER_MANUAL_LIVE_ENABLED=true`，主 workflow active；自然 schedule 的执行结果仍待观察。当前模型为 `z-ai/glm-5.3-flash`，预算与 SDK 参数沿用已发布配置，初始基线仍在 building，按原截止时间续接且不主动推送历史新闻。下面的默认关闭顺序供新部署使用；当前状态以带时间的实际验收记录为准。
 
 ## 默认关闭与启用顺序
 
