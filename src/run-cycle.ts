@@ -6,6 +6,7 @@ import { recordCandidateDevelopment, restoreDevelopmentHistory } from './develop
 import { confirmSummaryMembers, deliveryAllowed, deliveryAttempts, ownsDelivery, prepareOvernightSummaries, retryDue } from './delivery.ts';
 import { archiveExpiredCandidates, beginInitialBaseline, candidateBatch, completeInitialBaseline, expireStaleNotifications } from './recovery.ts';
 import { candidateFingerprint, conciseParaphrase, publicStatePayload, retainedEvidence } from './state-payload.ts';
+import { splitText } from './text.ts';
 
 export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> {
   let persistenceFailed = false;
@@ -44,7 +45,7 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
           const text = update.command === 'digest'
             ? state.digest.length ? renderDigest(state.digest) : '摘要暂为空；后续成功巡检会保留相关内容。'
             : renderStatus(state, budget.status(), now);
-          for (const [index, part] of telegramParts(text).entries()) {
+          for (const [index, part] of splitText(text, 4000).entries()) {
             state.notifications.push({
               kind: 'command-reply', origin: 'command-reply', id: `command:${update.updateId}:${index}`,
               text: part, createdAt: now, status: 'pending', sentAt: null, attempts: [],
@@ -398,15 +399,4 @@ function renderStatus(state: MonitoringState, budget: ModelBudgetStatus, now: st
 
 function faultLabel(code: MonitoringFault['code']): string {
   return { 'telegram-updates': 'Telegram 指令读取', 'candidate-discovery': '候选采集', 'model-processing': '模型处理', 'source-reading': '来源读取' }[code];
-}
-
-function telegramParts(text: string): string[] {
-  const parts: string[] = [];
-  for (let start = 0; start < text.length;) {
-    let end = Math.min(start + 4000, text.length);
-    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end -= 1;
-    parts.push(text.slice(start, end));
-    start = end;
-  }
-  return parts;
 }

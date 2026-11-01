@@ -29,14 +29,18 @@ export function createModelBudget(options: { state: MonitoringState; store: Stat
     return null;
   }
 
+  function applicationPauseReason(remainingUsd: number): BudgetPauseReason | null {
+    if (remainingUsd <= 0) return 'monthly-budget';
+    if (runSpentUsd >= limits.runBudgetUsd) return 'run-budget';
+    if (steps >= limits.maxSteps) return 'steps';
+    return null;
+  }
+
   async function admit(inputBytes: number, maxOutputTokens: number): Promise<boolean> {
     const now = options.clock().toISOString();
     const status = modelBudgetStatus(state, config, now);
     ledger.pauseReason = calls.some(({ status }) => status !== 'complete') ? 'unknown-cost'
-      : status.remainingUsd <= 0 ? 'monthly-budget'
-      : runSpentUsd >= limits.runBudgetUsd ? 'run-budget'
-      : steps >= limits.maxSteps ? 'steps'
-      : requestSizeReason(inputBytes, maxOutputTokens);
+      : applicationPauseReason(status.remainingUsd) ?? requestSizeReason(inputBytes, maxOutputTokens);
     if (ledger.pauseReason) return false;
     try {
       const allowance = await options.model.getAllowance?.();
@@ -82,11 +86,8 @@ export function createModelBudget(options: { state: MonitoringState; store: Stat
     status: (): ModelBudgetStatus => {
       const status = modelBudgetStatus(state, config, options.clock().toISOString(), { runSpentUsd, steps });
       ledger.pauseReason = status.pauseReason === 'unknown-cost' ? 'unknown-cost'
-        : status.remainingUsd <= 0 ? 'monthly-budget'
-        : runSpentUsd >= limits.runBudgetUsd ? 'run-budget'
-        : steps >= limits.maxSteps ? 'steps'
-        : providerFloor !== null && providerFloor <= 0 ? 'provider-limit'
-        : ['monthly-budget', 'run-budget', 'steps'].includes(ledger.pauseReason ?? '') ? null : ledger.pauseReason;
+        : applicationPauseReason(status.remainingUsd) ?? (providerFloor !== null && providerFloor <= 0 ? 'provider-limit'
+          : ['monthly-budget', 'run-budget', 'steps'].includes(ledger.pauseReason ?? '') ? null : ledger.pauseReason);
       return { ...status, pauseReason: ledger.pauseReason };
     },
     usage: (): ModelUsage | null => {

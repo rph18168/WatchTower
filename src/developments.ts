@@ -52,6 +52,12 @@ export function restoreDevelopmentHistory(state: MonitoringState): void {
     candidate.digestSummary ??= state.digest.find(({ candidateId }) => candidateId === candidate.story.id)?.summary;
     candidate.developmentReview = { status: 'pending', comparedRevisionIds: [] };
   }
+  // Repair legacy standalone payloads without resetting failure history or
+  // changing the text already captured by durable overnight deliveries.
+  for (const notification of state.notifications.filter(isDevelopment)) {
+    if (notification.status !== 'pending' || notification.summaryIds?.length || notification.text.length <= 4096) continue;
+    notification.text = notificationText(notification);
+  }
 }
 
 function restoreDigestAssociation(state: MonitoringState, development: DevelopmentRecord, entry: DigestEntry, candidate: StoredCandidate | undefined): void {
@@ -190,7 +196,26 @@ function validateResolution(resolution: DevelopmentResolution, batch: Developmen
 }
 
 function notificationText(notification: DevelopmentNotification): string {
-  return `${notification.change}\n\n意义：${notification.whyItMatters}\n\n${notification.sources.map(({ kind, url }) => `${kind === 'original' ? '来源' : 'HN 讨论'}：${url}`).join('\n')}`;
+  const header = `${notification.change}\n\n意义：${notification.whyItMatters}\n\n`;
+  const sources = notification.sources.map(({ kind, url }) => ({ kind, text: `${kind === 'original' ? '来源' : 'HN 讨论'}：${url}` }));
+  const complete = header + sources.map(({ text }) => text).join('\n');
+  if (complete.length <= 4096) return complete;
+
+  // Keep claims intact and choose only whole links. The Digest and state keep
+  // every source; reserving an HN link keeps the discussion traceable too.
+  const footer = '\n\n完整来源见 /digest。';
+  const selected = new Set<typeof sources[number]>();
+  let length = header.length + footer.length;
+  const include = (source: typeof sources[number]) => {
+    const addedLength = source.text.length + (selected.size ? 1 : 0);
+    if (length + addedLength > 4096) return;
+    selected.add(source);
+    length += addedLength;
+  };
+  const discussion = sources.find(({ kind }) => kind === 'hn');
+  if (discussion) include(discussion);
+  for (const source of sources) if (!selected.has(source)) include(source);
+  return header + sources.filter((source) => selected.has(source)).map(({ text }) => text).join('\n') + footer;
 }
 
 function isDevelopment(notification: PendingNotification): notification is DevelopmentNotification {

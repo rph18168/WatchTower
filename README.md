@@ -38,6 +38,8 @@ npm start -- --allow-paid-model
 
 Telegram 提供本人私聊的 `/digest`、`/status`、`/pause` 和 `/resume`。每个周期优先读取操作，暂停后仍能回复与恢复；夜间查询不受主动通知时段限制。预算不足会排入去重的运行报告；命令处理、身份边界、游标恢复和 24 小时未读更新边界见 [Telegram 控制说明](docs/telegram-controls.md)。
 
+同一动态合并的来源过多时，主动通知保留正文与可容纳的完整原文、HN 讨论链接，并提示通过 `/digest` 查阅完整来源；摘要与持久状态保留全部来源。
+
 应用的业务入口为 `runCycle({ loadConfig, state, hn, model, clock? })`，返回保存后的 `digest`、`markdown`、候选处理数量 `status` 及本轮 `usage`。`StateStore.load()` / `save()` 都是异步契约，`save` 只有在持久化完成后才应成功返回；SQLite 适配器还提供 `close()`。远端快照适配器可在这一存储 seam 延续持久化契约，无需再暴露每个业务步骤。
 
 HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固定本轮上界，回看 48 小时、初始至少 20 分，读取所有可用分页并按帖子 ID 合并；如果服务端结果总数超出可用页面，显式失败，不把截断结果当作完整采集。摘要依据 HN 材料，保存原文与 HN 讨论入口；拟议重大动态还须读取经网络地址校验的原文并核对关键事实，证据不足保留为摘要。正文仅用于当轮内存；待处理 HN 正文可由本轮发现结果或[官方 HN item API](https://github.com/HackerNews/API#items)重新取得。
