@@ -4,7 +4,7 @@
 
 当前代码包括候选采集、摘要、来源核实、动态归并、Telegram 本人控制、用量预算、静默时段、投递重试和近期恢复。主要业务均通过完整周期与真实 SQLite 离线验证；[T10 / #11](https://github.com/rph18168/WatchTower/issues/11) 的真实部署验收仍须按[验收运行手册](docs/live-acceptance.md)完成并留下实际证据。
 
-GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，未配置时均关闭。本仓在 2026-11-01 已完成真实 GLM 摘要与新 runner 的本人 `/digest` 回复；维护者于 `08:09:35.371Z` 开启定时变量，当前手动、定时开关均为 true，自然 schedule 执行尚待观察。手动入口还有仅处理本人 Telegram 命令的 `commands` 模式，可在新 runner 中查询持久摘要而不调用模型。约 15 分钟调度采用 best effort；部署、调度限制、状态备份及恢复见[部署说明](docs/deployment.md)。
+GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，未配置时均关闭。本仓在 2026-11-01 已完成真实 GLM 摘要与新 runner 的本人 `/digest` 回复；维护者于 `08:09:35.371Z` 开启定时变量，手动、定时开关均保持 true。至 `09:10:50Z` 的只读检查，开启约一小时仍未观测到新的自然 schedule，原因未确定，规格 #1／T10 #11 的定时验收仍未完成。手动入口还有仅处理本人 Telegram 命令的 `commands` 模式，可在新 runner 中查询持久摘要而不调用模型。约 15 分钟调度采用 best effort；部署、调度限制、状态备份及恢复见[部署说明](docs/deployment.md)。
 
 ## 环境与验证
 
