@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { splitText } from './text.ts';
 import type { DevelopmentNotification, MonitoringState, NotificationAttempt, OvernightSummaryNotification, PendingNotification } from './types.ts';
 
 const shanghaiHour = new Intl.DateTimeFormat('en-GB', {
@@ -112,18 +113,6 @@ function queueSummarySections(state: MonitoringState, sections: { member: Develo
     batch.push(section);
   }
   finishBatch();
-}
-
-function splitText(text: string, limit: number): string[] {
-  const parts: string[] = [];
-  for (let offset = 0; offset < text.length;) {
-    let end = Math.min(offset + limit, text.length);
-    // Preserve a supplementary character when the UTF-16 boundary bisects it.
-    if (end < text.length && /[\uD800-\uDBFF]/u.test(text[end - 1]!)) end--;
-    parts.push(text.slice(offset, end));
-    offset = end;
-  }
-  return parts;
 }
 
 /** Summary members remain in the outbox as evidence, never as a second send. */

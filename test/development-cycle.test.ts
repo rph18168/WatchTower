@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { runCycle } from '../src/index.ts';
+import { createTelegramSender, runCycle } from '../src/index.ts';
 import { createEstablishedStateStore as createSqliteStateStore } from './support/state.ts';
 import type { CandidateStory, DevelopmentNotification, DigestModelAdapter, PendingNotification, SourceEvidence } from '../src/index.ts';
 
@@ -104,6 +104,84 @@ test('同一动态的不同链接和不同表述经比较后仍合并，不因�
     assert.equal(compared.digest.length, 1);
     assert.ok(compared.digest[0]?.sources.some(({ url }) => url === discussion.url));
     assert.equal(compared.usage?.costUsd, 0.003);
+  } finally {
+    state.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('合并来源过长的日间通知保留完整摘要，未知发送跨 SQLite 重启后以完整可追溯链接重试', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-development-long-links-'));
+  const path = join(directory, 'state.sqlite');
+  let state = await createSqliteStateStore(path);
+  const stories = [first, duplicate].map((story, index) => ({
+    ...story, url: `https://${index ? 'b' : 'a'}.example/${'x'.repeat(1980)}`,
+  }));
+  const received: string[] = [];
+  const telegram = createTelegramSender({
+    botToken: 'test-only', personalChatId: '123',
+    fetch: async (_input, init) => {
+      const { text } = JSON.parse(String(init?.body));
+      received.push(text);
+      if (received.length === 1) throw new Error('Controlled uncertain delivery');
+      return Response.json({ ok: true, result: { message_id: 321, chat: { id: 123, type: 'private' } } });
+    },
+  });
+  const mergedModel: DigestModelAdapter = {
+    ...model,
+    resolveDevelopment: async ({ knownDevelopments }) => ({
+      resolution: { ...knownDevelopments[0]!, relation: 'duplicate' }, usage,
+    }),
+  };
+  const expectedSources = stories.flatMap(({ url, hnUrl }) => [{ kind: 'original', url }, { kind: 'hn', url: hnUrl }]);
+  try {
+    const pending = await runCycle({
+      loadConfig: async () => config, state, hn: { discover: async () => stories }, model: mergedModel,
+      sources: { read: async ({ candidateId }) => sourceFor(stories.find(({ id }) => id === candidateId)!) },
+      telegram, clock: () => now,
+    });
+    assert.equal(received.length, 1, 'Telegram must receive a bounded notification rather than reject it locally');
+    assert.ok(received[0]!.length <= 4096);
+    assert.ok(received[0]!.includes(change));
+    assert.ok(received[0]!.includes(whyItMatters));
+    assert.ok(received[0]!.includes(stories[0]!.url));
+    assert.ok(received[0]!.includes(stories[0]!.hnUrl));
+    assert.match(received[0]!, /完整来源见 \/digest/);
+    for (const [url] of received[0]!.matchAll(/https?:\/\/\S+/gu)) {
+      assert.ok(expectedSources.some((source) => source.url === url), 'Every displayed URL must be complete');
+    }
+    assert.deepEqual(pending.digest[0]?.sources, expectedSources);
+    assert.deepEqual(developmentNotifications(pending)[0]?.sources, expectedSources);
+    assert.equal(pending.notifications[0]?.status, 'pending');
+    assert.equal(pending.notifications[0]?.attempts[0]?.status, 'unknown');
+
+    state.close();
+    state = await createSqliteStateStore(path);
+    const another = { ...duplicate, id: '503', url: `https://c.example/${'x'.repeat(1980)}`, hnUrl: 'https://news.ycombinator.com/item?id=503' };
+    const allSources = [...expectedSources, { kind: 'original', url: another.url }, { kind: 'hn', url: another.hnUrl }];
+    const growing = await runCycle({
+      loadConfig: async () => config, state, hn: { discover: async () => [another] }, model: mergedModel,
+      sources: { read: async () => sourceFor(another) }, telegram, clock: () => new Date('2026-11-01T01:00:30.000Z'),
+    });
+    assert.equal(received.length, 1, 'Merging more sources must preserve the existing retry backoff');
+    assert.equal(growing.notifications[0]?.status, 'pending');
+    assert.deepEqual(growing.digest[0]?.sources, allSources);
+    assert.deepEqual(developmentNotifications(growing)[0]?.sources, allSources);
+
+    state.close();
+    state = await createSqliteStateStore(path);
+    const recovered = await runCycle({
+      loadConfig: async () => config, state, hn: { discover: async () => [] },
+      model: { analyze: async () => { throw new Error('摘要和已核实通知已持久保存'); } },
+      telegram, clock: () => new Date('2026-11-01T01:15:00.000Z'),
+    });
+    assert.deepEqual(received, [pending.notifications[0]!.text, growing.notifications[0]!.text]);
+    assert.ok(received[1]!.length <= 4096);
+    for (const [url] of received[1]!.matchAll(/https?:\/\/\S+/gu)) assert.ok(allSources.some((source) => source.url === url));
+    assert.deepEqual(recovered.digest[0]?.sources, allSources);
+    for (const { url } of allSources) assert.ok(recovered.markdown.includes(url));
+    assert.equal(recovered.notifications[0]?.status, 'sent');
+    assert.deepEqual(recovered.notifications[0]?.attempts.map(({ status }) => status), ['unknown', 'sent']);
   } finally {
     state.close();
     await rm(directory, { recursive: true, force: true });
