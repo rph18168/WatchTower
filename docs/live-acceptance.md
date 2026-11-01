@@ -4,7 +4,7 @@
 
 ## 先固定可复查的版本
 
-确认 T01–T09 已整合、完整回归和代码审查通过，记录实际默认分支及最终执行的 checkout SHA、配置文件与 lockfile SHA-256。安装环境固定为 Node 24.15.0；依赖版本见 [README](../README.md#环境与验证)。默认模型 `openai/gpt-4.1-mini` 只是配置值；验收还须记录实际收据中的模型。
+确认 T01–T09 已整合、完整回归和代码审查通过，记录实际默认分支及最终执行的 checkout SHA、配置文件与 lockfile SHA-256。安装环境固定为 Node 24.15.0；依赖版本见 [README](../README.md#环境与验证)。当前模型已按使用者选择改为 `z-ai/glm-5.3-flash`，尚未完成该模型的真实摘要验收；验收还须记录实际收据中的模型。文末首次失败的历史请求目标仍为 `openai/gpt-4.1-mini`，此次配置更改不证明该次失败的根因或费用，旧 unknown 保护继续有效。
 
 已实现的请求参数为严格 JSON Schema、`provider.requireParameters=true`、`store=false`、`allowFinalResponse=false`、传输重试关闭、60 秒请求期限，以及当前 `usage.maxInputBytes`／`maxOutputTokens`／费用／步数限制。摘要、来源核实和身份比较共享预算。默认月预算 US$10、单轮 US$0.25、六步、64,000 输入字节和 4096 输出 token；这些是停止阈值，不能承诺最终账单绝不超过阈值。
 
