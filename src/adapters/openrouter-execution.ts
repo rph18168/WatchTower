@@ -1,17 +1,26 @@
 import { OpenRouter } from '@openrouter/agent';
 import type { PostModelCallPayload } from '@openrouter/agent';
 import { HTTPClient } from '@openrouter/sdk/lib/http';
-import type { ModelExecution, ModelUsage } from '../types.ts';
+import type { ModelCallDiagnostic, ModelExecution, ModelUsage } from '../types.ts';
+import { nativeErrorClass, safeGenerationId, safeModelDiagnostic, safeRequestId } from '../model-diagnostics.ts';
+
+export interface StructuredModelResult {
+  data: unknown;
+  usage: ModelUsage;
+  response: Pick<ModelCallDiagnostic, 'httpStatus' | 'requestId' | 'generationId'>;
+}
 
 /** Allowlisted accounting only. SDK/transport errors must not escape to logs. */
 export class StructuredModelError extends Error {
   readonly usage: ModelUsage;
   readonly code?: 'provider-limit';
-  constructor(usage: ModelUsage, code?: 'provider-limit') {
+  readonly diagnostic?: ModelCallDiagnostic;
+  constructor(usage: ModelUsage, code?: 'provider-limit', diagnostic?: ModelCallDiagnostic) {
     super('OpenRouter structured request failed; accounting retained');
     this.name = 'StructuredModelError';
     this.usage = usage;
     this.code = code;
+    this.diagnostic = diagnostic;
   }
 }
 
@@ -29,22 +38,33 @@ export function createStructuredExecutor(options: { apiKey: string; fetch?: type
   return async (request: {
     model: string; instructions: string; input: string;
     schema: Record<string, unknown>; name: string; execution?: ModelExecution;
-  }): Promise<{ data: unknown; usage: ModelUsage }> => {
+  }): Promise<StructuredModelResult> => {
     const calls: PostModelCallPayload[] = [];
     let dispatches = 0;
     let admissionError: unknown;
     let receiptFailed = false;
     let rejectedRequests = 0;
+    let diagnostic: ModelCallDiagnostic | undefined;
+    let responseMetadata: Pick<ModelCallDiagnostic, 'httpStatus' | 'requestId' | 'generationId'> = {};
     const client = new OpenRouter({
       apiKey: options.apiKey,
       httpClient: new HTTPClient({ fetcher: async (input, init) => {
-        const response = await (options.fetch ?? fetch)(input, init);
+        let response: Response;
+        try { response = await (options.fetch ?? fetch)(input, init); }
+        catch (error) {
+          const cause = error instanceof Error ? error.cause : undefined;
+          diagnostic = safeModelDiagnostic({ stage: 'transport', errorClass: nativeErrorClass(error, 'UnknownError'),
+            transportCode: cause && typeof cause === 'object' && 'code' in cause ? cause.code : undefined });
+          throw error;
+        }
+        responseMetadata = { httpStatus: response.status, requestId: safeRequestId(response.headers.get('x-request-id')) };
+        if (!response.ok) diagnostic = { stage: 'http', errorClass: 'HttpError', ...responseMetadata };
         if (response.status === 402 || response.status === 429) {
           rejectedRequests += 1;
           try {
             // Explicit provider refusal has no completed generation. Other
             // failed/ambiguous transports retain unknown accounting instead.
-            await request.execution?.recordUsage({ costUsd: 0, inputTokens: 0, outputTokens: 0, costComplete: true });
+            await request.execution?.recordUsage({ costUsd: 0, inputTokens: 0, outputTokens: 0, costComplete: true, diagnostic });
           } catch { receiptFailed = true; }
         }
         return response;
@@ -94,10 +114,13 @@ export function createStructuredExecutor(options: { apiKey: string; fetch?: type
     try {
       const response = await result.getResponse();
       materialized = true;
+      responseMetadata.generationId = safeGenerationId(response.id);
       if (response.status !== 'completed') throw new Error('Incomplete model response');
       data = JSON.parse(await result.getText());
       decoded = true;
-    } catch {
+    } catch (error) {
+      diagnostic ??= { ...responseMetadata, stage: responseMetadata.httpStatus === undefined ? 'request' : 'response',
+        errorClass: nativeErrorClass(error, responseMetadata.httpStatus === undefined ? 'RequestError' : 'ResponseError') };
       // Failed getUsage() logs the original SDK error. Use the per-call
       // receipts when no response materialized, retaining uncertainty.
     }
@@ -116,9 +139,9 @@ export function createStructuredExecutor(options: { apiKey: string; fetch?: type
       costComplete: dispatches > 0 && calls.length + rejectedRequests === dispatches && calls.every(({ usage }) => amount(usage?.cost)),
     };
     if (admissionError) throw admissionError;
-    if (rejectedRequests) throw new StructuredModelError(usage, 'provider-limit');
-    if (!decoded || receiptFailed) throw new StructuredModelError(usage);
-    return { data, usage };
+    if (rejectedRequests) throw new StructuredModelError(usage, 'provider-limit', diagnostic);
+    if (!decoded || receiptFailed) throw new StructuredModelError(usage, undefined, diagnostic);
+    return { data, usage, response: responseMetadata };
   };
 }
 

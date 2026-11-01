@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { DigestModelAdapter, ModelExecution, ModelUsage } from '../types.ts';
+import type { DigestModelAdapter, ModelCallDiagnostic, ModelExecution, ModelUsage } from '../types.ts';
+import type { StructuredModelResult } from './openrouter-execution.ts';
 
 const verificationResponse = z.object({
   supported: z.boolean(),
@@ -18,15 +19,17 @@ const resolutionResponse = z.object({
 
 type StructuredExecutor = (request: {
   model: string; instructions: string; input: string; schema: Record<string, unknown>; name: string; execution?: ModelExecution;
-}) => Promise<{ data: unknown; usage: ModelUsage }>;
+}) => Promise<StructuredModelResult>;
 
 /** A validation failure retains the operation's actual accounting receipt. */
 export class DevelopmentModelError extends Error {
   readonly usage: ModelUsage;
-  constructor(usage: ModelUsage) {
+  readonly diagnostic: ModelCallDiagnostic;
+  constructor(usage: ModelUsage, response: StructuredModelResult['response']) {
     super('Development verification failed');
     this.name = 'DevelopmentModelError';
     this.usage = usage;
+    this.diagnostic = { ...response, stage: 'response', errorClass: 'ValidationError' };
   }
 }
 
@@ -50,7 +53,7 @@ export function createDevelopmentVerifier(execute: StructuredExecutor): NonNulla
       schema: z.toJSONSchema(verificationResponse),
     });
     const parsed = verificationResponse.safeParse(result.data);
-    if (!parsed.success) throw new DevelopmentModelError(result.usage);
+    if (!parsed.success) throw new DevelopmentModelError(result.usage, result.response);
     return { verification: parsed.data, usage: result.usage };
   };
 }
@@ -74,7 +77,7 @@ export function createDevelopmentResolver(execute: StructuredExecutor): NonNulla
       schema: z.toJSONSchema(resolutionResponse),
     });
     const parsed = resolutionResponse.safeParse(result.data);
-    if (!parsed.success) throw new DevelopmentModelError(result.usage);
+    if (!parsed.success) throw new DevelopmentModelError(result.usage, result.response);
     return { resolution: parsed.data, usage: result.usage };
   };
 }

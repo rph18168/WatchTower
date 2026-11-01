@@ -35,6 +35,17 @@ export interface ModelBudgetState {
 export interface ModelCallReceipt extends ModelUsage {
   responseId?: string;
   model?: string;
+  diagnostic?: ModelCallDiagnostic;
+}
+
+/** Allowlisted failure context; never an SDK exception or response body. */
+export interface ModelCallDiagnostic {
+  stage: 'request' | 'transport' | 'http' | 'response';
+  errorClass: 'RequestError' | 'UnknownError' | 'TypeError' | 'SyntaxError' | 'AbortError' | 'TimeoutError' | 'HttpError' | 'ResponseError' | 'ValidationError';
+  httpStatus?: number;
+  transportCode?: 'ECONNRESET' | 'ECONNREFUSED' | 'ENOTFOUND' | 'EAI_AGAIN' | 'ETIMEDOUT' | 'UND_ERR_CONNECT_TIMEOUT' | 'UND_ERR_HEADERS_TIMEOUT' | 'UND_ERR_BODY_TIMEOUT' | 'UND_ERR_SOCKET';
+  requestId?: string;
+  generationId?: string;
 }
 
 export interface ModelCallRecord extends ModelCallReceipt {

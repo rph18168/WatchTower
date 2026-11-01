@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { CandidateStory, DevelopmentVerification, MonitoringState, SourceEvidence, StoredCandidate, VerifiedEvidenceCheckpoint } from './types.ts';
+import { safeModelDiagnostic } from './model-diagnostics.ts';
 
 const hashPattern = /^sha256:v1:[0-9a-f]{64}$/;
 
@@ -93,6 +94,11 @@ export function retainedEvidence(candidate: StoredCandidate, at: string): { veri
 /** This is a copy: actual model input and its byte accounting stay unchanged. */
 export function publicStatePayload(state: MonitoringState): MonitoringState {
   const snapshot = structuredClone(state);
+  for (const call of snapshot.budget?.calls ?? []) {
+    const diagnostic = safeModelDiagnostic(call.diagnostic);
+    if (diagnostic) call.diagnostic = diagnostic;
+    else delete call.diagnostic;
+  }
   for (const candidate of snapshot.candidates) {
     candidate.contentFingerprint ??= candidateFingerprint(candidate.story);
     candidate.hasStoryText = Boolean(candidate.story.text) || candidate.hasStoryText === true;

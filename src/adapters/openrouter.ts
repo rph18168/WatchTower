@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { DigestModelAdapter, ModelUsage } from '../types.ts';
+import type { DigestModelAdapter, ModelCallDiagnostic, ModelUsage } from '../types.ts';
 import { createAllowanceReader } from './openrouter-allowance.ts';
 import { createStructuredExecutor, structuredRequestBytes, StructuredModelError } from './openrouter-execution.ts';
 import { createDevelopmentResolver, createDevelopmentVerifier } from './development.ts';
@@ -28,8 +28,8 @@ function digestRequest({ model, topics, candidates }: Parameters<DigestModelAdap
 }
 
 export class DigestModelError extends StructuredModelError {
-  constructor(usage: ModelUsage, code?: 'provider-limit') {
-    super(usage, code);
+  constructor(usage: ModelUsage, code?: 'provider-limit', diagnostic?: ModelCallDiagnostic) {
+    super(usage, code, diagnostic);
     this.name = 'DigestModelError';
   }
 }
@@ -49,13 +49,13 @@ export function createOpenRouterAdapter(options: {
       const result = await execute({
         ...digestRequest({ model, topics, candidates }), execution,
       }).catch((error: unknown) => {
-        if (error instanceof StructuredModelError) throw new DigestModelError(error.usage, error.code);
+        if (error instanceof StructuredModelError) throw new DigestModelError(error.usage, error.code, error.diagnostic);
         throw error;
       });
       try {
         return { decisions: digestResponse.parse(result.data).decisions, usage: result.usage };
       } catch {
-        throw new DigestModelError(result.usage);
+        throw new DigestModelError(result.usage, undefined, { ...result.response, stage: 'response', errorClass: 'ValidationError' });
       }
     },
   };

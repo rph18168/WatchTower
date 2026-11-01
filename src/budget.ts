@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { modelUsageLimits } from './config.ts';
+import { safeModelDiagnostic } from './model-diagnostics.ts';
 import type { BudgetPauseReason, DigestModelAdapter, ModelBudgetStatus, ModelCallReceipt, ModelCallRecord, ModelExecution, ModelUsage, MonitoringState, StateStore, WatchTowerConfig } from './types.ts';
 
 export class BudgetAdmissionError extends Error {
@@ -121,6 +122,8 @@ export function createModelBudget(options: { state: MonitoringState; store: Stat
         });
         if (typeof usage?.responseId === 'string' && /^[\w.:-]{1,200}$/.test(usage.responseId)) active.responseId = usage.responseId;
         if (typeof usage?.model === 'string' && /^[\w./:-]{1,200}$/.test(usage.model)) active.model = usage.model;
+        const diagnostic = safeModelDiagnostic(usage?.diagnostic);
+        if (diagnostic) active.diagnostic = diagnostic;
         if (!costComplete) ledger.pauseReason = 'unknown-cost';
         if (ledger.provider) ledger.provider.remainingUsd = providerFloor;
         await store.save(state);
@@ -167,7 +170,10 @@ export function createModelBudget(options: { state: MonitoringState; store: Stat
           await store.save(state);
           return null;
         }
+        const diagnostic = safeModelDiagnostic(error && typeof error === 'object' && 'diagnostic' in error ? error.diagnostic : undefined);
+        if (diagnostic) active.diagnostic = diagnostic;
         if (active.status === 'in-flight') await settle(outstandingUsage(error && typeof error === 'object' && 'usage' in error ? error.usage as ModelUsage : undefined));
+        else if (diagnostic) await store.save(state);
         if (error && typeof error === 'object' && 'code' in error && error.code === 'provider-limit') {
           ledger.pauseReason = 'provider-limit';
           await store.save(state);
