@@ -11,3 +11,7 @@ Use the five canonical triage labels. Before triage or label changes, read `docs
 ### Domain docs
 
 Single-context: root `GLOSSARY.md` and `docs/adr/`. Before codebase exploration, read `docs/agents/domain.md`.
+
+### Deployment
+
+Before deployment acceptance or schedule diagnosis, read `docs/agents/deployment.md`.

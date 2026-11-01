@@ -4,23 +4,24 @@
 
 当前代码包括候选采集、摘要、来源核实、动态归并、Telegram 本人控制、用量预算、静默时段、投递重试和近期恢复。主要业务均通过完整周期与真实 SQLite 离线验证；[T10 / #11](https://github.com/rph18168/WatchTower/issues/11) 的真实部署验收已通过，版本、收据与恢复证据见[验收运行手册](docs/live-acceptance.md)。
 
-GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，未配置时均关闭。本仓在 2026-11-01 已完成真实 GLM 摘要与新 runner 的本人 `/digest` 回复；维护者于 `08:09:35.371Z` 开启定时变量，随后自然 [schedule 41313205828](https://github.com/rph18168/WatchTower/actions/runs/41313205828) 的完整周期于 `13:51:12Z` 成功完成。手动、定时开关均保持 true；先前未产生自然事件的原因仍未确定。手动入口还有仅处理本人 Telegram 命令的 `commands` 模式，可在新 runner 中查询持久摘要而不调用模型。约 15 分钟调度采用 best effort；部署、调度限制、状态备份及恢复见[部署说明](docs/deployment.md)。
+GitHub Actions 的手动真实运行和无人值守定时运行分别由显式开关保护，未配置时均关闭。历史真实摘要、本人 `/digest` 和自然定时证据见[验收档案](docs/acceptance/2026-11-01-spec-1.md)；当前开关和运行状态以实际查询为准。手动入口还有仅处理本人 Telegram 命令的 `commands` 模式，可在新 runner 中查询持久摘要而不调用模型。约 15 分钟调度采用 best effort；部署、调度限制、状态备份及恢复见[部署说明](docs/deployment.md)。
 
 ## 环境与验证
 
 - Node.js 24.15.0 或更高版本；SQLite 使用内置 `node:sqlite`。
 - `npm ci`
-- `npm test`
-- `npm run typecheck`
-- `npm run build`
+- `npm run check`（测试、类型检查、构建）
+- actionlint 1.7.12（workflow 静态检查；CI 校验固定下载 SHA-256）
 
-测试通过同一个 `runCycle` 入口使用真实临时 SQLite、可控时钟以及 HN/模型/Telegram/GitHub 外部适配器。协议测试使用真实 Agent SDK 与可控 SSE 响应；公开状态测试检查实际上传的 SQLite 二进制和旧删除页残留。全部测试无需外部网络、API 凭据或付费调用。
+独立 `validation.yml` 自动验证代码 push 和 PR 的待检提交，不注入业务 Secrets，也不运行巡检。手动验证仍可使用 `offline`；部署只读核查见[验收工具](docs/acceptance-tools.md)。
+
+业务测试通过同一个 `runCycle` 入口使用真实临时 SQLite、可控时钟以及 HN/模型/Telegram/GitHub 外部适配器。协议测试使用真实 Agent SDK 与可控 SSE 响应；公开状态测试检查实际上传的 SQLite 二进制和旧删除页残留。新增验收工具通过公开命令入口测试外部行为。全部测试无需外部网络、API 凭据或付费调用。
 
 依赖已固定并提交 lockfile：`@openrouter/agent 0.11.0`、`@openrouter/sdk 0.13.7`、`zod 4.6.7`、`htmlparser2 10.0.0`、`undici 7.30.1`；开发工具为 TypeScript 7.0.2 与 Node 类型 24.19.2。基础 SDK 同时通过 override 固定，防止 Agent 的版本范围改变已核对的调用行为。
 
 ## 关注主题配置
 
-修改根目录的 `watchtower.config.json`。每个主题有唯一 `id` 和描述兴趣的 `description`；支持多个不同领域的主题，不需要通知条件或领域专属字段。默认 AI 主题只是可替换示例。`model` 为 OpenRouter 模型标识，当前按使用者选择设为 `z-ai/glm-5.3-flash`，已有真实 generation 收据、持久摘要及新 runner 的本人 `/digest` 回复确认，见[实际记录](docs/live-acceptance.md)。切换模型不构成先前失败的根因证据，也不会清除历史未知费用保护。
+修改根目录的 `watchtower.config.json`。每个主题有唯一 `id` 和描述兴趣的 `description`；支持多个不同领域的主题，不需要通知条件或领域专属字段。默认 AI 主题只是可替换示例。`model` 为 OpenRouter 模型标识，当前按使用者选择设为 `z-ai/glm-5.3-flash`，已有真实 generation 收据、持久摘要及新 runner 的本人 `/digest` 回复确认，见[实际记录](docs/acceptance/2026-11-01-spec-1.md)。切换模型不构成先前失败的根因证据，也不会清除历史未知费用保护。
 
 每个完整周期重新读取配置；已保存的运行状态不会覆盖新配置。历史摘要继续保留，新的待处理候选按当前主题判断。
 
@@ -44,7 +45,7 @@ Telegram 提供本人私聊的 `/digest`、`/status`、`/pause` 和 `/resume`。
 
 HN 适配器使用 [Algolia HN 搜索协议](https://hn.algolia.com/api)，固定本轮上界，回看 48 小时、初始至少 20 分，读取所有可用分页并按帖子 ID 合并；如果服务端结果总数超出可用页面，显式失败，不把截断结果当作完整采集。摘要依据 HN 材料，保存原文与 HN 讨论入口；拟议重大动态还须读取经网络地址校验的原文并核对关键事实，证据不足保留为摘要。正文仅用于当轮内存；待处理 HN 正文可由本轮发现结果或[官方 HN item API](https://github.com/HackerNews/API#items)重新取得。
 
-模型适配器使用 [OpenRouter 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，传入主题和候选，要求通用中文摘要、本地校验候选/主题 ID 和基本中文内容。单次响应不授予工具权限；`provider.requireParameters=true`，输出 token 使用本轮配置（默认 4096），超时 60 秒，传输重试关闭，`allowFinalResponse=false`、`store=false`。真实 GLM 手动和定时周期均沿用这些参数，实际收据见[验收记录](docs/live-acceptance.md)。
+模型适配器使用 [OpenRouter 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，传入主题和候选，要求通用中文摘要、本地校验候选/主题 ID 和基本中文内容。单次响应不授予工具权限；`provider.requireParameters=true`，输出 token 使用本轮配置（默认 4096），超时 60 秒，传输重试关闭，`allowFinalResponse=false`、`store=false`。真实 GLM 手动和定时周期均沿用这些参数，实际收据见[验收记录](docs/acceptance/2026-11-01-spec-1.md)。
 
 `usage.costUsd` 允许为空；`costComplete` 说明费用是否完整，费用缺失不能解释为免费。SDK 完整响应后读取累计 usage；传输失败时只携带已收到的允许字段回执并标记不完整，不把原始 SDK 错误写入日志。
 

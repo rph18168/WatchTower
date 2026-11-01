@@ -10,6 +10,8 @@
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "check": "npm test && npm run typecheck && npm run build",
+    "acceptance": "node scripts/acceptance.ts",
     "start": "node dist/cli.js"
   },
   "dependencies": {

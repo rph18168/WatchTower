@@ -2,15 +2,7 @@
 
 工作流为 `.github/workflows/watchtower.yml`，读取默认分支代码及 `watchtower.config.json`。定时和手动 `live` 执行同一个 `npm start -- --allow-paid-model --github-state` 完整周期；手动 `commands` 执行现有的 `--commands-only --github-state`，只处理本人命令和相应回复。两者使用同一状态分支、身份校验和串行组。不依赖常开主机、runner 缓存、artifact 或旧工作目录恢复状态。
 
-本仓已于 2026-11-01 完成真实 HN → GLM → SQLite 摘要及下一独立 runner 的本人 `/digest` 回复确认，自然 [schedule 41313205828](https://github.com/rph18168/WatchTower/actions/runs/41313205828) 的完整周期与快照续接验收也已通过。旧失败请求的费用按 provider key 增量与使用者独占使用确认核清，历史审计保留；临时账务查询与维护入口已移除。实际收据、快照与尚未自然发生的路径见[真实验收运行手册](live-acceptance.md)。
-
-截至 `2026-11-01T13:51:14Z` 的自然运行，两个显式开关均为 true，实际 checkout 为 `1a2c5a50ac38babe9635e1d22348c4020e93affb`，live job 成功，完整周期步骤于 `13:51:12Z` 完成。固定快照 `940192017914499994882c911f83781c7278bbc7` 已独立核验完整性、旧摘要／费用审计／发送确认延续，未新增发送。当前模型为 `z-ai/glm-5.3-flash`，预算与 SDK 参数沿用已发布配置，初始基线仍在 building，按原截止时间续接且不主动推送历史新闻。下面的默认关闭顺序供新部署使用；当前状态以带时间的实际验收记录为准。
-
-## 启用初期的历史观察
-
-维护者于 `2026-11-01T08:09:35.371Z` 开启 `WATCHTOWER_SCHEDULE_ENABLED=true`，手动开关也为 true，主 workflow active；当时自然 schedule 的执行结果仍待观察。
-
-在 `2026-11-01 09:10:34–09:10:50 UTC` 的只读检查中，启用约一小时后的 schedule 列表仍共 3 条，最新为 `41281990877`（`06:43:52Z` 创建，skipped，早于启用），没有手动闭环后的新自然事件；Root 独立核验一致。主 workflow active、默认分支及 cron 正确，没有已确认的本地配置故障，未确定未触发的原因。两个运行开关保持 true，已部署代码为 `f5338045f353078a3c6ddb114c79d1263ec75f75`，状态 HEAD 仍为 `b0d70156a47a2b91844f8daf3baf61d992f82b1b`。规格 #1／T10 #11 及自然定时验收保持未完成，须取得真实 schedule 执行、收据和续接快照后再判断；本次没有手工派发、改 cron、重置状态或绕过预算。
+操作顺序和完成条件见[真实验收运行手册](live-acceptance.md)，只读查询见[验收工具](acceptance-tools.md)，自然定时诊断及外部等待退出条件见[部署诊断流程](agents/deployment.md)。具体部署的历史证据见[验收档案](acceptance/2026-11-01-spec-1.md)；当前运行状态从 GitHub 和固定 SQLite 快照核实。
 
 ## 默认关闭与启用顺序
 
@@ -48,7 +40,7 @@ Secrets 仅在检查与执行步骤注入；`npm ci`、构建及离线步骤没�
 
 cron 为 UTC `7,22,37,52 * * * *`，以约 15 分钟为目标，单个 job 最多 10 分钟。所有状态写入入口使用同一个固定 `concurrency.group: watchtower-state`，且 `cancel-in-progress: false`，避免新任务中断正在保存或发送的运行。新增恢复 workflow 时也必须使用此 group，不能按事件名、ref 或 workflow 名拆分。GitHub 默认并发组只保留一个 pending，新 pending 可能替换旧 pending，因此不承诺每个 tick 都实际运行。
 
-工作流只监听 `schedule` / `workflow_dispatch`，不监听 push，因此状态提交不会递归启动巡检。后续 CI 如监听 push，也应排除状态分支；不要仅依赖 `GITHUB_TOKEN` 触发限制。
+工作流只监听 `schedule` / `workflow_dispatch`，不监听 push，因此状态提交不会递归启动巡检。独立 `validation.yml` 监听代码 push／PR，排除状态分支，使用独立并发组，并 checkout 事件对应提交；验证不会替换巡检的 pending 任务。
 
 GitHub 的 schedule 可能延迟或丢弃排队任务，公开仓库长时间无活动（当前文档为 60 天）会自动停用定时工作流。检查 Actions 页面最近成功时间及快照中最近成功周期时间；不要把代码部署成功或状态分支提交视作永久在线证明。被停用时，先确认所需凭据、预算和恢复范围，再通过 Actions 页面或 `gh workflow enable watchtower.yml --repo rph18168/WatchTower` 重新启用。该命令恢复 workflow 可用性，真实运行仍受两个显式变量控制。
 
