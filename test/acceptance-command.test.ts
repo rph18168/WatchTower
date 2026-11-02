@@ -7,6 +7,11 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { acceptanceCommand } from '../scripts/acceptance.ts';
 
+function githubContentsResponse(bytes: Buffer) {
+  return { size: bytes.length, encoding: 'base64', content: bytes.toString('base64'),
+    sha: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
+}
+
 test('验收命令区分成功查询没有自然事件和 GitHub 查询失败，不公开原始错误', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-acceptance-'));
   const args = ['schedule', '--repo', 'owner/WatchTower', '--workflow', 'watchtower.yml',
@@ -93,8 +98,7 @@ test('快照验收报告公开边界问题并隐藏原材料与身份值，损�
     let corrupt = false;
     const github = { jobLog: async () => '', json: async () => {
       const bytes = corrupt ? Buffer.from('not SQLite') : await readFile(file);
-      return { size: bytes.length, encoding: 'base64', content: bytes.toString('base64'),
-        sha: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
+      return githubContentsResponse(bytes);
     } };
     const args = ['snapshot', '--repo', 'owner/WatchTower', '--commit', commit, '--out', join(directory, 'evidence')];
     assert.equal((await acceptanceCommand(args, { github })).exitCode, 4);
@@ -145,8 +149,7 @@ for (const command of ['snapshot', 'compare']) {
           if (path.includes('/compare/')) return { status: 'ahead', ahead_by: 1, behind_by: 0,
             base_commit: { sha: before }, merge_base_commit: { sha: before } };
           const bytes = await readFile(join(directory, path.endsWith(before) ? 'before.sqlite' : 'after.sqlite'));
-          return { size: bytes.length, encoding: 'base64', content: bytes.toString('base64'),
-            sha: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
+          return githubContentsResponse(bytes);
         },
       };
       const args = command === 'snapshot' ? ['--commit', after] : ['--before', before, '--after', after];
@@ -182,8 +185,7 @@ test('固定 SHA 的只读快照比较保留旧摘要、费用和 message7，未
         if (path.includes('/compare/')) return { status: 'ahead', ahead_by: 2, behind_by: 0,
           base_commit: { sha: before }, merge_base_commit: { sha: before } };
         const bytes = await readFile(join(directory, path.endsWith(before) ? 'before.sqlite' : 'after.sqlite'));
-        return { size: bytes.length, encoding: 'base64', content: bytes.toString('base64'),
-          sha: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
+        return githubContentsResponse(bytes);
       },
       jobLog: async () => '',
     };
@@ -243,8 +245,7 @@ test('快照比较报告恢复期间 pending 转 sent 的通知，排除旧发�
             base_commit: { sha: sameSnapshot ? after : before }, merge_base_commit: { sha: sameSnapshot ? after : before } };
         }
         const bytes = await readFile(join(directory, path.endsWith(before) ? 'before.sqlite' : 'after.sqlite'));
-        return { size: bytes.length, encoding: 'base64', content: bytes.toString('base64'),
-          sha: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
+        return githubContentsResponse(bytes);
       },
     };
     const args = ['compare', '--repo', 'owner/WatchTower', '--before', before, '--after', after,
