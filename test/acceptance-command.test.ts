@@ -127,6 +127,47 @@ function snapshot(path: string, calls: object[], extra: object = {}) {
   } finally { database.close(); }
 }
 
+for (const command of ['snapshot', 'compare']) {
+  test(`${command} 报告只输出初始基线的允许字段，仍标记额外敏感字段`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'watchtower-baseline-privacy-'));
+    const before = 'a'.repeat(40), after = 'b'.repeat(40);
+    const baseline = { since: '2026-11-30T00:00:00Z', until: '2026-12-02T00:00:00Z',
+      status: 'complete', completedAt: '2026-12-02T00:01:00Z' };
+    const privateValues = ['canary-baseline-user', 'canary-baseline-token', 'canary-baseline-note'];
+    try {
+      const initialBaseline = { ...baseline, telegramUserId: privateValues[0],
+        extra: { token: privateValues[1] }, note: privateValues[2] };
+      snapshot(join(directory, 'before.sqlite'), [], { initialBaseline });
+      snapshot(join(directory, 'after.sqlite'), [], { initialBaseline });
+      const github = {
+        jobLog: async () => '',
+        async json(path: string) {
+          if (path.includes('/compare/')) return { status: 'ahead', ahead_by: 1, behind_by: 0,
+            base_commit: { sha: before }, merge_base_commit: { sha: before } };
+          const bytes = await readFile(join(directory, path.endsWith(before) ? 'before.sqlite' : 'after.sqlite'));
+          return { size: bytes.length, encoding: 'base64', content: bytes.toString('base64'),
+            sha: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
+        },
+      };
+      const args = command === 'snapshot' ? ['--commit', after] : ['--before', before, '--after', after];
+      const result = await acceptanceCommand([command, '--repo', 'owner/WatchTower', ...args,
+        '--out', join(directory, 'evidence')], { github });
+      assert.equal(result.exitCode, 4);
+      const reportText = await readFile(join(directory, 'evidence', `${command}.json`), 'utf8');
+      const report = JSON.parse(reportText);
+      for (const detail of command === 'snapshot' ? [report] : [report.before, report.after]) {
+        assert.deepEqual(detail.initialBaseline, baseline);
+        assert.ok(detail.privacy.sensitiveFieldPaths.includes('state.runtime.initialBaseline.telegramUserId'));
+        assert.ok(detail.privacy.sensitiveFieldPaths.includes('state.runtime.initialBaseline.extra.token'));
+      }
+      for (const value of privateValues) {
+        assert.equal(reportText.includes(value), false);
+        assert.equal(JSON.stringify(result.summary).includes(value), false);
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+}
+
 test('固定 SHA 的只读快照比较保留旧摘要、费用和 message7，未知费用不按零验收', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-snapshot-proof-'));
   const before = 'a'.repeat(40), after = 'b'.repeat(40);
@@ -176,6 +217,50 @@ test('固定 SHA 的只读快照比较保留旧摘要、费用和 message7，未
       assert.equal(unknown.newCallTotals.knownCostUsd, receipt.known);
       assert.equal(unknown.after.fees.byUtcMonth['2026-12'].knownCostUsd, receipt.monthKnown);
     }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('快照比较报告恢复期间 pending 转 sent 的通知，排除旧发送和仍待发送项', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-recovered-delivery-'));
+  const before = 'a'.repeat(40), after = 'b'.repeat(40);
+  const sent = { id: 'already-sent', kind: 'command-reply', text: '旧摘要回复', status: 'sent',
+    sentAt: '2026-12-02T00:00:00Z', messageId: '7', attempts: [{ status: 'sent' }] };
+  const pending = { id: 'recovered-reply', kind: 'command-reply', text: '恢复期间的摘要回复',
+    status: 'pending', sentAt: null, attempts: [{ status: 'unknown' }] };
+  const stillPending = { ...pending, id: 'still-pending' };
+  const recovered = { ...pending, status: 'sent', sentAt: '2026-12-02T00:02:00Z', messageId: '8',
+    attempts: [...pending.attempts, { status: 'sent' }] };
+  const newSent = { ...sent, id: 'new-development', kind: 'development', messageId: '9' };
+  try {
+    snapshot(join(directory, 'before.sqlite'), [], { notifications: [sent, pending, stillPending] });
+    snapshot(join(directory, 'after.sqlite'), [], { notifications: [sent, recovered, stillPending, newSent] });
+    const github = {
+      jobLog: async () => '',
+      async json(path: string) {
+        if (path.includes('/compare/')) {
+          const sameSnapshot = path.endsWith(`${after}...${after}`);
+          return { status: sameSnapshot ? 'identical' : 'ahead', ahead_by: sameSnapshot ? 0 : 1, behind_by: 0,
+            base_commit: { sha: sameSnapshot ? after : before }, merge_base_commit: { sha: sameSnapshot ? after : before } };
+        }
+        const bytes = await readFile(join(directory, path.endsWith(before) ? 'before.sqlite' : 'after.sqlite'));
+        return { size: bytes.length, encoding: 'base64', content: bytes.toString('base64'),
+          sha: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
+      },
+    };
+    const args = ['compare', '--repo', 'owner/WatchTower', '--before', before, '--after', after,
+      '--out', join(directory, 'evidence')];
+    assert.equal((await acceptanceCommand(args, { github })).exitCode, 0);
+    const report = JSON.parse(await readFile(join(directory, 'evidence', 'compare.json'), 'utf8'));
+    assert.equal(report.continuity.oldSentNotificationsUnchanged, true);
+    assert.equal(report.continuity.notificationAttemptsRetained, true);
+    assert.deepEqual(report.newSentNotifications.map((item: { id: string }) => item.id), ['recovered-reply', 'new-development']);
+    assert.equal(report.newSentNotifications[0].messageId, '8');
+    assert.equal(report.newSentNotifications[0].attempts, 2);
+    const repeat = await acceptanceCommand(['compare', '--repo', 'owner/WatchTower', '--before', after, '--after', after,
+      '--out', join(directory, 'repeat')], { github });
+    assert.equal(repeat.exitCode, 0);
+    const unchanged = JSON.parse(await readFile(join(directory, 'repeat', 'compare.json'), 'utf8'));
+    assert.deepEqual(unchanged.newSentNotifications, []);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

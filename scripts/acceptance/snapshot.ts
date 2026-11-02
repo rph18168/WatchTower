@@ -19,7 +19,8 @@ const notificationSchema = z.looseObject({
 });
 const runtimeSchema = z.looseObject({
   schemaVersion: z.literal(1), lastRunAt: z.iso.datetime().nullable(),
-  initialBaseline: z.looseObject({ since: z.string(), until: z.string(), status: z.string() }).optional(),
+  initialBaseline: z.looseObject({ since: z.string(), until: z.string(), status: z.string(),
+    completedAt: z.iso.datetime().nullable().optional() }).optional(),
   budget: z.looseObject({ calls: z.array(callSchema).optional(), pauseReason: z.string().nullable() }).optional(),
   notifications: z.array(notificationSchema).default([]),
   control: z.looseObject({ fault: z.object({ code: z.string(), at: z.string() }).optional() }).optional(),
@@ -80,7 +81,9 @@ function inspect(bytes: Buffer, path: string) {
       [month, callTotals(calls.filter(call => call.startedAt.startsWith(month)))]));
     const detail = {
       integrity: { quickCheck: 'ok', schemaVersion: runtime.schemaVersion, bytes: bytes.length, sha256: hash(bytes) },
-      lastRunAt: runtime.lastRunAt, initialBaseline: runtime.initialBaseline ?? null,
+      lastRunAt: runtime.lastRunAt,
+      initialBaseline: runtime.initialBaseline ? { since: runtime.initialBaseline.since, until: runtime.initialBaseline.until,
+        status: runtime.initialBaseline.status, completedAt: runtime.initialBaseline.completedAt } : null,
       candidateCounts: Object.fromEntries(['pending', 'processed', 'archived'].map(status => [status, candidates.filter(item => item.status === status).length])),
       digestIds: digest.map(item => item.id),
       fees: { ...callTotals(calls), byUtcMonth },
@@ -148,12 +151,12 @@ export async function compareSnapshots(github: GitHubReader, repository: string,
   };
   const oldCallIds = new Set(before.calls.map(call => call.id));
   const newCalls = after.calls.filter(call => !oldCallIds.has(call.id));
-  const oldNotificationIds = new Set(before.runtime.notifications.map(item => item.id));
+  const previouslySentIds = new Set(before.runtime.notifications.filter(item => item.status === 'sent').map(item => item.id));
   const newCallTotals = callTotals(newCalls);
   const healthy = before.healthy && after.healthy && Object.values(continuity).every(Boolean) && newCallTotals.receiptsComplete;
   return { exitCode: healthy ? 0 : 4, detail: {
     result: healthy ? 'SNAPSHOTS_CONTINUE' : 'SNAPSHOTS_REQUIRE_REVIEW', before: before.detail, after: after.detail,
     ancestry, continuity, newCallTotals, newCallIds: newCalls.map(call => call.id),
-    newSentNotifications: after.detail.notifications.filter(item => item.status === 'sent' && !oldNotificationIds.has(item.id)),
+    newSentNotifications: after.detail.notifications.filter(item => item.status === 'sent' && !previouslySentIds.has(item.id)),
   } };
 }
