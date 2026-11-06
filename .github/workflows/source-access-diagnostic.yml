@@ -1,0 +1,32 @@
+name: Temporary source access diagnostic
+
+on:
+  push:
+    branches: [codex/fix-news-source]
+    paths:
+      - .github/workflows/source-access-diagnostic.yml
+      - scripts/diagnostics/source-access.mjs
+      - src/adapters/source-reader.ts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watchtower-source-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Read public sources through the production guarded reader
+        run: node scripts/diagnostics/source-access.mjs
