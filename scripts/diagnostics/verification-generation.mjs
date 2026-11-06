@@ -11,27 +11,41 @@ const reasonValues = new Set(['stop', 'length', 'max_tokens', 'max_output_tokens
   'content_filter', 'error', 'cancelled', 'end_turn', 'eos_token', 'stop_sequence']);
 const results = [];
 for (const id of ids) {
+  let stage = 'request';
+  let httpStatus = null;
   try {
     const response = await fetch(`https://openrouter.ai/api/v1/generation?id=${id}`, {
       method: 'GET', headers: { authorization: `Bearer ${key}` }, redirect: 'error', signal: AbortSignal.timeout(15_000),
     });
+    httpStatus = response.status;
     if (!response.ok) {
       results.push({ id, httpStatus: response.status });
       process.exitCode = 1;
       await response.body?.cancel();
       continue;
     }
-    const data = (await response.json()).data;
-    if (data?.id !== id || data?.model !== 'z-ai/glm-5.3-flash') throw new Error('Unexpected receipt identity');
-    const receipt = { id, httpStatus: response.status, model: data.model,
+    stage = 'decode';
+    const envelope = await response.json();
+    const data = envelope.data;
+    stage = 'identity';
+    if (data?.id !== id) {
+      results.push({ id, httpStatus, error: 'unexpected-receipt-identity',
+        returnedId: typeof data?.id === 'string' && /^gen-\d{10,16}-[A-Za-z0-9]{8,128}$/.test(data.id) ? data.id : null,
+        hasData: Boolean(data && typeof data === 'object') });
+      process.exitCode = 1;
+      continue;
+    }
+    const receipt = { id, httpStatus: response.status,
+      model: typeof data.model === 'string' && /^[\w./:+-]{1,120}$/.test(data.model) ? data.model : null,
       cancelled: typeof data.cancelled === 'boolean' ? data.cancelled : null,
       finish_reason: reasonValues.has(data.finish_reason) ? data.finish_reason : data.finish_reason == null ? null : 'unrecognized',
       native_finish_reason: reasonValues.has(data.native_finish_reason) ? data.native_finish_reason : data.native_finish_reason == null ? null : 'unrecognized',
     };
     for (const name of numberFields) receipt[name] = typeof data[name] === 'number' && Number.isFinite(data[name]) ? data[name] : null;
     results.push(receipt);
-  } catch {
-    results.push({ id, error: 'metadata-query-failed' });
+  } catch (error) {
+    results.push({ id, httpStatus, stage, error: 'metadata-query-failed',
+      errorClass: ['TypeError', 'SyntaxError', 'AbortError', 'TimeoutError'].includes(error?.name) ? error.name : 'UnknownError' });
     process.exitCode = 1;
   }
 }
