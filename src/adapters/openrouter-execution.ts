@@ -38,6 +38,7 @@ export function createStructuredExecutor(options: { apiKey: string; fetch?: type
   return async (request: {
     model: string; instructions: string; input: string;
     schema: Record<string, unknown>; name: string; execution?: ModelExecution;
+    reasoning?: { effort: 'low' };
   }): Promise<StructuredModelResult> => {
     const calls: PostModelCallPayload[] = [];
     let dispatches = 0;
@@ -88,6 +89,7 @@ export function createStructuredExecutor(options: { apiKey: string; fetch?: type
       tools: [],
       text: { format: { type: 'json_schema', name: request.name, strict: true, schema: request.schema } },
       provider: { requireParameters: true },
+      reasoning: request.reasoning,
       maxOutputTokens: request.execution?.maxOutputTokens ?? 4096,
       allowFinalResponse: false, signal: AbortSignal.timeout(60_000), store: false,
       hooks: { PostModelCall: [{ handler: async (event) => {

@@ -6,6 +6,7 @@
     }
   ],
   "model": "z-ai/glm-5.3-flash",
+  "verificationReasoningEffort": "low",
   "usage": {
     "monthlyBudgetUsd": 10,
     "runBudgetUsd": 0.25,

@@ -16,6 +16,8 @@
 
 `monthlyBudgetUsd` 和 `runBudgetUsd` 是美元费用停止阈值；`maxSteps` 计入本轮所有实际模型请求，包括摘要、来源核实、重试及 SDK 追加请求。三者可设为零以停止相应付费工作。输入上限按 UTF-8 字节计算，真实请求包括 instructions、结构化输出 schema 和来源内容；输出上限是每次请求的 `max_output_tokens`。输入字节与输出 token 限制必须为正整数，步数必须为非负整数，费用必须为有限非负数。无效配置在采集前拒绝。
 
+当前部署还在配置根层设置 `"verificationReasoningEffort": "low"`，仅降低来源核实的推理强度，为核实结果保留输出空间；省略时沿用 provider 默认值，其他值在采集前拒绝。所选模型须支持 `low`；不支持推理参数的模型应省略此项。推理 token 与可见结果共用 `max_output_tokens`，`low` 不保证每次都能完成；不完整响应仍不进入通知，已发生费用和待核实状态继续保留。参见 [OpenRouter 推理预算说明](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)。
+
 费用在响应返回后才能确定。一次已经获准的请求可能超过剩余月额度或本轮阈值；下一次请求会被阻止。这些阈值不是最终账单的精确硬上限，也不包括 GitHub Actions、存储及其他服务费用。SDK 的软停止条件不能替代传输前的检查。当前适配器关闭传输重试和额外收尾响应，仍通过 SDK `beforeRequest` 检查每次实际派发，并用 `PostModelCall` 逐次核算。
 
 ## 预算状态与恢复

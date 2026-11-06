@@ -202,7 +202,8 @@ export async function runCycle(provided: RunCycleOptions): Promise<CycleResult> 
         // The linked page is the verification evidence. Do not repeat a possibly
         // large HN story body in this second, separately admitted model request.
         const { id, title, url, hnUrl, score, publishedAt } = candidate.story;
-        const input = { model: config.model, topics: config.topics, candidate: { id, title, url, hnUrl, score, publishedAt }, proposal: review.proposal, source };
+        const input = { model: config.model, topics: config.topics, candidate: { id, title, url, hnUrl, score, publishedAt }, proposal: review.proposal, source,
+          reasoningEffort: config.verificationReasoningEffort };
         phase = 'model-processing';
         const result = review.verification ? { verification: review.verification } : await budget.execute(input, (execution) => externalOperation(options, state, now, 'model-processing', () => options.model.verifyDevelopment!({ ...input, execution })));
         if (!result) continue;
@@ -315,6 +316,9 @@ function clearUncertainty(state: MonitoringState, candidateId: string, note: str
 function validateConfiguration(config: WatchTowerConfig): void {
   if (!config || !Array.isArray(config.topics) || config.topics.length === 0 || typeof config.model !== 'string' || !config.model.trim()) {
     throw new Error('Configuration requires a model and at least one Watch Topic');
+  }
+  if (config.verificationReasoningEffort !== undefined && config.verificationReasoningEffort !== 'low') {
+    throw new Error('Verification reasoning effort must be low or omitted');
   }
   const ids = new Set<string>();
   for (const topic of config.topics) {

@@ -6,6 +6,8 @@ export interface WatchTopic {
 export interface WatchTowerConfig {
   topics: WatchTopic[];
   model: string;
+  /** Optional; omit for models that do not support a reasoning effort setting. */
+  verificationReasoningEffort?: 'low';
   usage?: Partial<ModelUsageLimits>;
 }
 
@@ -364,6 +366,7 @@ export interface DigestModelAdapter {
     candidate: CandidateStory;
     proposal: SignificanceProposal;
     source: SourceEvidence;
+    reasoningEffort?: WatchTowerConfig['verificationReasoningEffort'];
     execution?: ModelExecution;
   }): Promise<{ verification: DevelopmentVerification; usage: ModelUsage }>;
   resolveDevelopment?(request: {
