@@ -3,6 +3,42 @@ import { gzipSync } from 'node:zlib';
 import test from 'node:test';
 import { createSourceReader } from '../src/index.ts';
 
+test('公网 IPv4 及其映射形式通过与 DNS 连接共用的地址检查，IPv6 公网来源仍可读取', async () => {
+  let requests = 0;
+  const reader = createSourceReader({ fetch: async () => {
+    requests++;
+    return new Response('A verifiable public announcement.', { headers: { 'content-type': 'text/plain' } });
+  } });
+  for (const url of [
+    'https://93.184.215.14/announcement',
+    'https://[::ffff:93.184.215.14]/announcement',
+    'https://[::ffff:5db8:d70e]/announcement',
+    'https://[2606:4700:4700::1111]/announcement',
+  ]) {
+    const result = await reader.read({ candidateId: '401', url });
+    assert.equal(result.status, 'read', url);
+    assert.equal(result.failureCode, undefined, url);
+  }
+  assert.equal(requests, 4);
+});
+
+test('放行公网 IPv4 后仍拒绝保留网段、私网映射地址和映射区间两侧的非公网 IPv6', async () => {
+  let requests = 0;
+  const reader = createSourceReader({ fetch: async () => { requests++; throw new Error('Forbidden source reached HTTP'); } });
+  for (const host of [
+    '0.1.2.3', '10.1.2.3', '100.64.0.1', '127.0.0.1', '169.254.169.254',
+    '172.16.0.1', '192.0.0.1', '192.0.2.1', '192.88.99.1', '192.168.0.1',
+    '198.18.0.1', '198.19.255.255', '198.51.100.1', '203.0.113.1', '224.0.0.1', '255.255.255.255',
+    '[::ffff:10.1.2.3]', '[::ffff:169.254.169.254]', '[::ffff:198.18.0.1]',
+    '[::fffe:ffff:ffff]', '[::1:0:0:0]', '[1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]',
+    '[::]', '[::1]', '[2001:db8::1]', '[2002:5db8:d70e::1]', '[3fff::1]', '[4000::1]', '[fc00::1]', '[fe80::1]',
+  ]) {
+    const result = await reader.read({ candidateId: '401', url: 'https://' + host + '/' });
+    assert.equal(result.failureCode, 'unsafe-url', host);
+  }
+  assert.equal(requests, 0);
+});
+
 test('来源读取的真实连接拒绝私网字面地址、规范化地址和含私网结果的 DNS', async () => {
   let lookups = 0;
   const reader = createSourceReader({ lookup: async () => {

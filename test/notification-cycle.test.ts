@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createGitHubStateStore, createTelegramSender, runCycle } from '../src/index.ts';
+import { createGitHubStateStore, createSourceReader, createTelegramSender, runCycle } from '../src/index.ts';
 import { createEstablishedStateStore as createSqliteStateStore, establishMonitoringState } from './support/state.ts';
 
 const now = new Date('2026-11-01T01:00:00.000Z');
@@ -32,6 +32,39 @@ const significantModel = {
   analyze: async () => ({ decisions: [{ candidateId: story.id, topicIds: ['astronomy'], summary: '天文台开放观测影像档案，公众可以查阅。', significance: proposal }], usage }),
   verifyDevelopment: async () => ({ verification, usage }),
 };
+
+test('真实来源地址检查放行公网 IPv4 后，重大动态进入持久队列并送达，重开状态不重复发送', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchtower-public-source-'));
+  const path = join(directory, 'state.sqlite');
+  let state = await createSqliteStateStore(path);
+  const publicStory = { ...story, url: 'https://93.184.215.14/archive' };
+  let sends = 0;
+  try {
+    const result = await runCycle({
+      loadConfig: async () => config, state, hn: { discover: async () => [publicStory] }, model: significantModel,
+      sources: createSourceReader({ fetch: async () => new Response(source.text, { headers: { 'content-type': 'text/plain' } }) }),
+      telegram: { send: async () => {
+        const persisted = await state.load();
+        assert.equal(persisted.notifications[0]?.status, 'pending');
+        sends++;
+        return { status: 'sent', messageId: 'public-source-fixture' };
+      } }, clock: () => now,
+    });
+    assert.equal(sends, 1, 'The source guard must not silently discard a verifiable public IPv4 development');
+    assert.equal(result.notifications[0]?.status, 'sent');
+    state.close();
+    state = await createSqliteStateStore(path);
+    await runCycle({
+      loadConfig: async () => config, state, hn: { discover: async () => [] },
+      model: { analyze: async () => { throw new Error('No new candidate'); } },
+      telegram: { send: async () => { sends++; throw new Error('Already confirmed'); } }, clock: () => now,
+    });
+    assert.equal(sends, 1);
+  } finally {
+    state.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('重大动态读取来源后形成通用中文通知，SQLite 持久保存待发送状态后才发送并确认', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchtower-notification-'));
