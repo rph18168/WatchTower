@@ -1,0 +1,32 @@
+name: Diagnose verification response
+
+on:
+  push:
+    branches: [codex/fix-verification-response]
+    paths:
+      - .github/workflows/verification-response-diagnostic.yml
+      - scripts/diagnostics/verification-generation.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watchtower-verification-metadata-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+      - name: Read two fixed generation receipts without model calls
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: node scripts/diagnostics/verification-generation.mjs
