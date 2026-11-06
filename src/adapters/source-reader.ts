@@ -16,9 +16,14 @@ for (const [address, prefix] of [
   ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24],
   ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4],
 ] as const) denied.addSubnet(address, prefix, 'ipv4');
-// Permit only global unicast IPv6, excluding its special/transition ranges.
+// BlockList also matches IPv4 through ::ffff:0:0/96. A blanket ::/3 rule
+// therefore rejects every IPv4 address. Leave that mapped interval to the
+// IPv4 rules above, while denying the rest of the non-global IPv6 range.
+denied.addRange('::', '::fffe:ffff:ffff', 'ipv6');
+denied.addRange('::1:0:0:0', '1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 'ipv6');
+// Permit only global unicast native IPv6, excluding special/transition ranges.
 for (const [address, prefix] of [
-  ['::', 3], ['4000::', 2], ['8000::', 1], ['2001::', 23],
+  ['4000::', 2], ['8000::', 1], ['2001::', 23],
   ['2001:db8::', 32], ['2002::', 16], ['3fff::', 20],
 ] as const) denied.addSubnet(address, prefix, 'ipv6');
 
